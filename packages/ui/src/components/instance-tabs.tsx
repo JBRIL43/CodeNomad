@@ -6,6 +6,8 @@ import {
   SortableProvider,
   closestCenter,
   createSortable,
+  useDragDropContext,
+  type CollisionDetector,
   type DragEvent as SolidDndDragEvent,
 } from "@thisbeyond/solid-dnd"
 import InstanceTab from "./instance-tab"
@@ -16,6 +18,7 @@ import ProjectRenameDialog from "./project-rename-dialog"
 import { renameProject } from "../stores/project-names"
 import { Plus, MonitorUp, Bell, BellOff, Settings } from "lucide-solid"
 import { keyboardRegistry } from "../lib/keyboard-registry"
+import { createLongPressHandlers } from "../lib/long-press"
 import { useI18n } from "../lib/i18n"
 import { isOsNotificationSupportedSync } from "../lib/os-notifications"
 import { canOpenRemoteWindows } from "../lib/runtime-env"
@@ -30,6 +33,9 @@ interface InstanceTabsProps {
   onSelect: (tabId: string) => void
   onClose: (tabId: string) => void
   onNew: () => void
+  /** Long press, right-click or Alt+Down on the new-instance button. */
+  onOpenLauncher?: (anchor: HTMLElement) => void
+  launcherOpen?: boolean
   onMoveTab: (tabId: string, targetTabId: string, placement: "before" | "after") => void
 }
 
@@ -99,6 +105,47 @@ const SortableAppTab: Component<SortableAppTabProps> = (props) => {
   )
 }
 
+/** Horizontal distance the strip bound removed from the dragged tab. */
+type DragBound = { overshoot: number }
+
+/** Like a browser, a dragged tab stays within the tab list: the strip only spans
+ * its tabs (the new-instance button follows them), so it would otherwise clip. */
+const KeepDraggedTabInStrip: Component<{ strip: () => HTMLElement | undefined; bound: DragBound }> = (props) => {
+  const [, { onDragStart, onDragEnd, addTransformer, removeTransformer }] = useDragDropContext()!
+  const id = "keep-in-strip"
+  onDragStart(({ draggable }) => {
+    props.bound.overshoot = 0
+    const strip = props.strip()?.getBoundingClientRect()
+    if (!strip) return
+    const tab = draggable.layout
+    const min = strip.left - tab.left
+    const max = strip.right - tab.right
+    addTransformer("draggables", draggable.id, {
+      id,
+      order: 100,
+      callback: (transform) => {
+        const x = Math.min(max, Math.max(min, transform.x))
+        props.bound.overshoot = transform.x - x
+        return { ...transform, x }
+      },
+    })
+  })
+  onDragEnd(({ draggable }) => {
+    removeTransformer("draggables", draggable.id, id)
+    props.bound.overshoot = 0
+  })
+  return null
+}
+
+/** Picks the drop target from where the pointer drags the tab, not its bounded
+ * position: a wide tab held at the strip's end must still reach the end slot. */
+const closestUnboundedCenter = (bound: DragBound): CollisionDetector => (draggable, droppables, context) => {
+  if (!bound.overshoot) return closestCenter(draggable, droppables, context)
+  const center = draggable.transformed.center
+  const unbounded = { ...draggable, transformed: { center: { x: center.x + bound.overshoot, y: center.y } } }
+  return closestCenter(unbounded as typeof draggable, droppables, context)
+}
+
 const StaticAppTab: Component<SortableAppTabProps> = (props) => {
   return (
     <div class="tab-draggable" data-app-tab-id={props.tab.id}>
@@ -114,6 +161,12 @@ const isTouchOnlyPointer = () => {
 
 const InstanceTabs: Component<InstanceTabsProps> = (props) => {
   const { t } = useI18n()
+  const newInstanceHandlers = createLongPressHandlers({
+    onClick: () => props.onNew(),
+    onLongPress: (anchor) => props.onOpenLauncher?.(anchor),
+  })
+  let tabList: HTMLDivElement | undefined
+  const dragBound: DragBound = { overshoot: 0 }
   const { preferences } = useConfig()
   const tabIds = createMemo(() => props.tabs.map((tab) => tab.id))
   const [dragReorderEnabled, setDragReorderEnabled] = createSignal(!isTouchOnlyPointer())
@@ -213,7 +266,7 @@ const InstanceTabs: Component<InstanceTabsProps> = (props) => {
       <div class="tab-bar tab-bar-instance">
         <div class="tab-container">
           <TabScroll>
-              <div class="tab-strip-tabs" role="tablist">
+              <div class="tab-strip-tabs" role="tablist" ref={tabList}>
                 <Show
                   when={dragReorderEnabled()}
                   fallback={
@@ -230,8 +283,9 @@ const InstanceTabs: Component<InstanceTabsProps> = (props) => {
                     </For>
                   }
                 >
-                  <DragDropProvider collisionDetector={closestCenter} onDragEnd={handleDragEnd}>
+                  <DragDropProvider collisionDetector={closestUnboundedCenter(dragBound)} onDragEnd={handleDragEnd}>
                     <DragDropSensors>
+                      <KeepDraggedTabInStrip strip={() => tabList} bound={dragBound} />
                       <SortableProvider ids={tabIds()}>
                         <For each={props.tabs}>
                           {(tab) => (
@@ -250,6 +304,19 @@ const InstanceTabs: Component<InstanceTabsProps> = (props) => {
                 </Show>
               </div>
           </TabScroll>
+          {/* Like a browser, the new-instance button follows the last tab. */}
+          <div class="tab-strip-new">
+            <button
+              class="new-tab-button new-instance-button"
+              {...newInstanceHandlers}
+              title={t(props.onOpenLauncher ? "instanceTabs.new.launcherTitle" : "instanceTabs.new.title")}
+              aria-label={t("instanceTabs.new.ariaLabel")}
+              aria-haspopup={props.onOpenLauncher ? "dialog" : undefined}
+              aria-expanded={props.onOpenLauncher ? Boolean(props.launcherOpen) : undefined}
+            >
+              <Plus class="w-4 h-4" />
+            </button>
+          </div>
           <div class="tab-bar-actions">
             <Show when={props.tabs.length > 1}>
               <div class="tab-shortcuts">
@@ -260,15 +327,6 @@ const InstanceTabs: Component<InstanceTabsProps> = (props) => {
                 />
               </div>
             </Show>
-
-            <button
-              class="new-tab-button"
-              onClick={props.onNew}
-              title={t("instanceTabs.new.title")}
-              aria-label={t("instanceTabs.new.ariaLabel")}
-            >
-              <Plus class="w-4 h-4" />
-            </button>
 
             <button
               class="new-tab-button"

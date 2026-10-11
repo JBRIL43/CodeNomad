@@ -6,6 +6,7 @@ import { Minimize2 } from "lucide-solid"
 import AlertDialog from "./components/alert-dialog"
 import AuthRecoveryDialog from "./components/auth-recovery-dialog"
 import FolderSelectionView from "./components/folder-selection-view"
+import NewInstanceLauncher from "./components/new-instance-launcher"
 import { useDesktopFolderLaunch } from "./lib/hooks/use-electron-folder-launch"
 import { installKeyboardOffset } from "./lib/keyboard-offset"
 import { showConfirmDialog } from "./stores/alerts"
@@ -565,6 +566,13 @@ const App: Component = () => {
     setShowFolderSelection(true)
   }
 
+  const [launcherOpen, setLauncherOpen] = createSignal(false)
+  const [launcherAnchor, setLauncherAnchor] = createSignal<HTMLElement>()
+  // The launcher is anchored to the tab bar: the home page or a closed tab bar retires it.
+  createEffect(() => {
+    if (showFolderSelection() || appTabs().length === 0) setLauncherOpen(false)
+  })
+
   function handleOpenSidecarPicker() {
     setSidecarPickerOpen(true)
     void ensureSidecarsLoaded()
@@ -841,6 +849,13 @@ const App: Component = () => {
                   onSelect={selectAppTab}
                   onClose={(tabId) => void handleCloseAppTab(tabId)}
                   onNew={handleNewInstanceRequest}
+                  onOpenLauncher={(anchor) => {
+                    // The home page already offers everything; a hidden tab bar must not reopen it.
+                    if (showFolderSelection()) return
+                    setLauncherAnchor(anchor)
+                    setLauncherOpen(true)
+                  }}
+                  launcherOpen={launcherOpen()}
                   onMoveTab={moveAppTab}
                 />
               </Show>
@@ -919,6 +934,17 @@ const App: Component = () => {
           </div>
         </Show>
 
+        <NewInstanceLauncher
+          open={launcherOpen()}
+          anchor={launcherAnchor()}
+          isLoading={isSelectingFolder()}
+          onOpenChange={setLauncherOpen}
+          onSelectFolder={(path) => void handleSelectFolder(path)}
+          onSelectExistingInstance={handleSelectExistingInstance}
+          onNewTemporaryInstance={() => void handleNewTemporaryInstance()}
+          onOpenSidecar={handleOpenSidecarPicker}
+          onOpenHome={handleNewInstanceRequest}
+        />
         <SettingsScreen />
         <SideCarPickerDialog open={sidecarPickerOpen()} onClose={() => setSidecarPickerOpen(false)} onOpenSidecar={handleOpenSidecar} />
         <AlertDialog />

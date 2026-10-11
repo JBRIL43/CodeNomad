@@ -174,6 +174,116 @@ test("upright tabs retain native pointer reordering and sidecar selection", asyn
   } finally { await page.close() }
 })
 
+test("a tab dragged past the last one stays visible beside the new-instance button", async () => {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
+  try {
+    await prepare(page)
+    for (const dir of ["ltr", "rtl"]) {
+      await page.evaluate(dir => { document.dir = dir; (window as any).tabFixture.count(3) }, dir)
+      await page.waitForTimeout(100)
+      const tab = page.locator('[data-fixture="instances"] [role="tab"]').last()
+      const box = (await tab.boundingBox())!
+      const step = dir === "rtl" ? -120 : 120
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(box.x + box.width / 2 + step, box.y + box.height / 2, { steps: 12 })
+      const during = await page.evaluate(() => {
+        const viewport = document.querySelector<HTMLElement>('[data-fixture="instances"] .tab-scroll')!
+        const dragged = document.querySelector('[data-fixture="instances"] .tab-draggable-active')!.getBoundingClientRect()
+        const clip = viewport.getBoundingClientRect()
+        return { hidden: Math.max(0, dragged.right - clip.right) + Math.max(0, clip.left - dragged.left), overflow: viewport.scrollWidth > viewport.clientWidth }
+      })
+      await page.mouse.up()
+      assert.deepEqual(during, { hidden: 0, overflow: false }, `${dir}: dragged tab is clipped or the strip scrolls`)
+    }
+    await page.evaluate(() => { document.dir = "ltr"; (window as any).tabFixture.count(9) })
+  } finally { await page.close() }
+})
+
+test("a wide tab held at the strip's edge still reaches the first and last slots", async () => {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
+  try {
+    await prepare(page)
+    const tabs = page.locator('[data-fixture="instances"] [role="tab"]')
+    const labels = () => tabs.allInnerTexts()
+    const drag = async (from: number, dx: number) => {
+      const box = (await tabs.nth(from).boundingBox())!
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2, { steps: 20 })
+      await page.mouse.up()
+      await page.waitForTimeout(200)
+    }
+    for (const dir of ["ltr", "rtl"]) {
+      await page.evaluate(dir => { document.dir = dir; (window as any).tabFixture.uneven() }, dir)
+      await page.waitForTimeout(100)
+      const toEnd = dir === "rtl" ? -1 : 1
+      const initial = await labels()
+      // The wide first tab, dragged well past the two narrow ones, lands last.
+      await drag(0, toEnd * 700)
+      assert.deepEqual(await labels(), [initial[1], initial[2], initial[0]], `${dir}: to the end`)
+      // And back past the first slot.
+      await drag(2, -toEnd * 700)
+      assert.deepEqual(await labels(), initial, `${dir}: to the start`)
+    }
+    await page.evaluate(() => { document.dir = "ltr"; (window as any).tabFixture.reset() })
+  } finally { await page.close() }
+})
+
+test("keyboard focus never leaves an overflowing tab under the new-instance button", async () => {
+  const page = await browser.newPage({ viewport: { width: 900, height: 800 } })
+  try {
+    await prepare(page)
+    for (const dir of ["ltr", "rtl"]) {
+      await page.evaluate(dir => { document.dir = dir }, dir)
+      await page.locator('[data-fixture="instances"] [role="tab"]').first().focus()
+      const covered: string[] = []
+      for (let step = 0; step < 18; step++) {
+        await page.keyboard.press("Tab")
+        await page.waitForTimeout(40)
+        const overlap = await page.evaluate(() => {
+          const el = document.activeElement as HTMLElement
+          const bar = document.querySelector('[data-fixture="instances"]')!
+          if (!el.closest('[data-fixture="instances"] [role="tablist"]')) return 0
+          const plus = bar.querySelector(".tab-strip-new")!.getBoundingClientRect(), focused = el.getBoundingClientRect()
+          // Only the visible part counts: the strip edge clipping a tab is not the button covering it.
+          const clip = bar.querySelector(".tab-scroll")!.getBoundingClientRect()
+          const left = Math.max(focused.left, clip.left), right = Math.min(focused.right, clip.right)
+          return Math.max(0, Math.min(right, plus.right) - Math.max(left, plus.left))
+        })
+        if (overlap > 0.5) covered.push(`${step}:${overlap}`)
+      }
+      assert.deepEqual(covered, [], `${dir}: focused tab under the new-instance button`)
+    }
+    await page.evaluate(() => { document.dir = "ltr" })
+  } finally { await page.close() }
+})
+
+test("focusing the new-instance button keeps the strip where it was", async () => {
+  const page = await browser.newPage({ viewport: { width: 900, height: 800 } })
+  try {
+    await prepare(page)
+    const bar = page.locator('[data-fixture="instances"]')
+    const offset = () => bar.locator(".tab-scroll").evaluate(e => Math.round(e.scrollLeft))
+    for (const dir of ["ltr", "rtl"]) {
+      await page.evaluate(dir => { document.dir = dir }, dir)
+      await bar.locator(".tab-scroll").evaluate(e => { e.scrollLeft = 0 })
+      await page.waitForTimeout(60)
+      // Shift+Tab from the bar actions lands on the button.
+      await bar.locator(".tab-bar-actions .new-tab-button").first().focus()
+      await page.keyboard.press("Shift+Tab")
+      assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("new-instance-button")), true)
+      assert.equal(await offset(), 0, `${dir}: keyboard focus scrolled the strip`)
+      await page.evaluate(() => (document.activeElement as HTMLElement).blur())
+      // Programmatic focus (e.g. a popup returning focus) behaves the same.
+      await bar.locator(".new-instance-button").evaluate(e => (e as HTMLElement).focus())
+      await page.waitForTimeout(60)
+      assert.equal(await offset(), 0, `${dir}: programmatic focus scrolled the strip`)
+    }
+    await page.evaluate(() => { document.dir = "ltr" })
+  } finally { await page.close() }
+})
+
 test("double-click, F2 and the context menu rename the tab's project through the shared dialog", async () => {
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
   const patches: any[] = []
