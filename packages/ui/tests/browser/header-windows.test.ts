@@ -790,6 +790,8 @@ for (const kind of ["command-palette", "session-search"]) test(`${kind} stays op
     await panel.waitFor()
     await page.locator("#outside").click()
     assert.equal(await panel.isVisible(), true)
+    // The toggle's blur ripple must finish without replaying window autofocus.
+    await page.waitForFunction(id => !document.querySelector(`button[aria-controls="${id}"] .MuiTouchRipple-ripple`), id)
     assert.equal(await page.locator("#outside").evaluate(el => el === document.activeElement), true)
     await trigger.click()
     await panel.waitFor({ state: "hidden" })
