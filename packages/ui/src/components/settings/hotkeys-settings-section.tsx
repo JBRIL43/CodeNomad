@@ -1,10 +1,8 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Component } from "solid-js"
+import { createMemo, createSignal, For, onCleanup, Show, type Component } from "solid-js"
 import { useI18n } from "../../lib/i18n"
 import { getHotkeyDefinitions, type HotkeyDefinition } from "../../lib/hotkey-definitions"
 import { findHotkeyConflicts, hotkeyEventKey, type HotkeyBinding } from "../../lib/hotkey-bindings"
-import { hotkeyDefaultContext, hotkeyLabel, resetHotkeyOverrides, saveHotkeyOverride, setHotkeyRecording } from "../../lib/hotkeys"
-import { flushNativeHotkeys, nativeHotkeysUnavailable } from "../../lib/native/hotkeys-sync"
-import { runtimeEnv } from "../../lib/runtime-env"
+import { hotkeyLabel, resetHotkeyOverrides, saveHotkeyOverride, setHotkeyRecording } from "../../lib/hotkeys"
 import { useConfig } from "../../stores/preferences"
 
 export const HotkeysSettingsSection: Component = () => {
@@ -14,16 +12,14 @@ export const HotkeysSettingsSection: Component = () => {
   const [recording, setRecording] = createSignal<string>()
   const [pending, setPending] = createSignal(false)
   const [error, setError] = createSignal(false)
-  const [nativeError, setNativeError] = createSignal(false)
-  let recordingEpoch = 0, disposed = false
   const mac = navigator.platform.toLowerCase().includes("mac")
-  const definitions = getHotkeyDefinitions({ host: runtimeEnv.host, windowContext: runtimeEnv.windowContext })
+  const definitions = getHotkeyDefinitions()
   const actionLabel = (definition: HotkeyDefinition) => t(definition.labelKey, { index: definition.id.match(/-(\d)$/)?.[1] })
   const rows = createMemo(() => {
     const query = filter().trim().toLocaleLowerCase()
     return definitions.filter(definition => `${actionLabel(definition)} ${hotkeyLabel(definition.id)}`.toLocaleLowerCase().includes(query))
   })
-  const conflicts = createMemo(() => findHotkeyConflicts(preferences().hotkeyOverrides, preferences().promptSubmitOnEnter, mac, hotkeyDefaultContext()))
+  const conflicts = createMemo(() => findHotkeyConflicts(preferences().hotkeyOverrides, preferences().promptSubmitOnEnter, mac))
   const warning = (id: string) => conflicts().filter(conflict => conflict.ids.includes(id)).map(conflict => {
     const actions = conflict.ids.filter(other => other !== id).map(other => {
       const definition = definitions.find(item => item.id === other)
@@ -33,26 +29,17 @@ export const HotkeysSettingsSection: Component = () => {
   }).join(" · ")
 
   function stopRecording() {
-    recordingEpoch++
     setRecording(undefined)
     setHotkeyRecording(false)
   }
-  onCleanup(() => { disposed = true; stopRecording() })
+  onCleanup(stopRecording)
   window.addEventListener("blur", stopRecording)
   onCleanup(() => window.removeEventListener("blur", stopRecording))
-  createEffect(() => { if (nativeHotkeysUnavailable()) stopRecording() })
 
-  async function beginRecording(id: string) {
+  function beginRecording(id: string) {
     stopRecording()
-    const epoch = recordingEpoch
-    setNativeError(false)
-    setPending(true)
     setHotkeyRecording(true)
-    const suspended = await flushNativeHotkeys(true)
-    if (disposed || epoch !== recordingEpoch) { if (!disposed) setPending(false); return }
-    setPending(false)
-    if (suspended) setRecording(id)
-    else { stopRecording(); setNativeError(true) }
+    setRecording(id)
   }
 
   async function mutate(action: () => Promise<boolean>) {
@@ -90,7 +77,6 @@ export const HotkeysSettingsSection: Component = () => {
       <button class="window-text-button" type="button" disabled={pending()} onClick={() => void mutate(resetHotkeyOverrides)}>{t("hotkeys.resetAll")}</button>
     </div>
     <Show when={error()}><p class="hotkeys-warning" role="alert">{t("hotkeys.saveFailed")}</p></Show>
-    <Show when={nativeError() || nativeHotkeysUnavailable()}><p class="hotkeys-warning" role="alert">{t(nativeHotkeysUnavailable() ? "hotkeys.browserKeysUnavailable" : "hotkeys.nativeUnavailable")}</p></Show>
     <div class="hotkeys-list">
       <For each={rows()}>{definition => <div class="hotkeys-row" data-hotkey-id={definition.id} role="group" aria-label={actionLabel(definition)}>
         <div class="hotkeys-action">
@@ -105,7 +91,7 @@ export const HotkeysSettingsSection: Component = () => {
         </Show>
         <div class="window-actions hotkeys-actions">
           <Show when={recording() === definition.id} fallback={<button class="window-text-button" type="button" disabled={pending()}
-            onClick={() => void beginRecording(definition.id)}>{t("hotkeys.edit")}</button>}>
+            onClick={() => beginRecording(definition.id)}>{t("hotkeys.edit")}</button>}>
             <button class="window-text-button" type="button" onClick={stopRecording}>{t("hotkeys.cancel")}</button>
           </Show>
           <button class="window-text-button" type="button" disabled={pending()} onClick={() => void mutate(() => saveHotkeyOverride(definition.id, []))}>{t("hotkeys.disable")}</button>

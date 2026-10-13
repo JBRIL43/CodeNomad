@@ -1,15 +1,10 @@
 import type { HotkeyBinding } from "./hotkey-bindings"
-import nativeProtocol from "./native/hotkeys-protocol.json"
-
-export interface HotkeyDefaultContext { host?: string; mac?: boolean; linux?: boolean; windowContext?: string }
 
 export interface HotkeyDefinition {
   id: string
   labelKey: string
-  category: "app" | "session" | "composer" | "search" | "files" | "window"
+  category: "app" | "session" | "composer" | "search" | "files"
   scope: "app" | "main" | "home" | "instance" | "session" | "composer" | "aside" | "search" | "files" | "instance-tab"
-  hosts?: string[]
-  contexts?: string[]
 }
 
 const definition = (id: string, category: HotkeyDefinition["category"], scope: HotkeyDefinition["scope"]): HotkeyDefinition => ({
@@ -32,15 +27,10 @@ export const hotkeyDefinitions: HotkeyDefinition[] = [
   definition("instance-rename", "app", "instance-tab"),
   ...Array.from({ length: 9 }, (_, i) => ({ ...definition(`app-tab-${i + 1}`, "app", "app"), labelKey: "hotkeys.action.app-tab" })),
   ...Array.from({ length: 9 }, (_, i) => ({ ...definition(`session-tab-${i + 1}`, "session", "instance"), labelKey: "hotkeys.action.session-tab" })),
-  ...nativeProtocol.actions.filter(id => id !== "new-instance" && id !== "open-command-palette")
-    .map(id => ({ ...definition(id, "window", "app"), hosts: ["electron", "tauri"],
-      ...(["window-new", "app-quit", "window-hide", "window-hide-others"].includes(id) ? { contexts: ["local", "preferences"] } : {}) })),
 ]
 
-export function getHotkeyDefinitions(filter?: { host?: string; category?: string; windowContext?: string }): HotkeyDefinition[] {
-  return hotkeyDefinitions.filter(item => (!filter?.category || item.category === filter.category)
-    && (!filter?.host || !item.hosts || item.hosts.includes(filter.host))
-    && (!filter?.windowContext || !item.contexts || item.contexts.includes(filter.windowContext)))
+export function getHotkeyDefinitions(filter?: { category?: string }): HotkeyDefinition[] {
+  return hotkeyDefinitions.filter(item => !filter?.category || item.category === filter.category)
 }
 
 const defaults: Record<string, HotkeyBinding[]> = {
@@ -75,29 +65,7 @@ const defaults: Record<string, HotkeyBinding[]> = {
   "instance-rename": [{ key: "F2" }],
 }
 
-export function defaultHotkeyBindings(id: string, promptSubmitOnEnter = true, context: HotkeyDefaultContext = {}): HotkeyBinding[] {
-  if (nativeProtocol.actions.includes(id) && id !== "new-instance" && id !== "open-command-palette") {
-    if (context.host !== "electron" && context.host !== "tauri") return []
-    if (context.windowContext === "remote" && ["window-new", "app-quit", "window-hide", "window-hide-others"].includes(id)) return []
-    const native: Record<string, HotkeyBinding[]> = {
-      // Project/session bindings keep their established defaults. Native window
-      // creation/close get distinct bindings and never compete with the renderer.
-      "window-new": [{ key: "n", mod: true, alt: true }],
-      "window-close": [{ key: "w", mod: true, alt: true }],
-      "window-reload": [{ key: "r", mod: true }],
-      "window-force-reload": [{ key: "r", mod: true, shift: true }],
-      "window-devtools": [{ key: "i", mod: true, ...(context.mac ? { alt: true } : { shift: true }) }],
-      "window-zoom-in": [{ key: "=", mod: true }, { key: "+", mod: true, shift: true }, { key: "+", mod: true }],
-      "window-zoom-out": [{ key: "-", mod: true }],
-      "window-zoom-reset": [{ key: "0", mod: true }],
-      "window-fullscreen": context.mac ? [{ key: "f", mod: true, ctrl: true }] : [{ key: "F11" }],
-      "window-minimize": context.mac || context.host === "electron" ? [{ key: "m", mod: true }] : [],
-      "window-hide": context.mac ? [{ key: "h", mod: true }] : [],
-      "window-hide-others": context.mac ? [{ key: "h", mod: true, alt: true }] : [],
-      "app-quit": context.mac || (context.host === "electron" && context.linux) ? [{ key: "q", mod: true }] : [],
-    }
-    return native[id] ?? []
-  }
+export function defaultHotkeyBindings(id: string, promptSubmitOnEnter = true): HotkeyBinding[] {
   if (id === "prompt-send") return [{ key: "Enter", ...(!promptSubmitOnEnter ? { mod: true } : {}) }]
   if (id === "prompt-newline") return promptSubmitOnEnter
     ? [{ key: "Enter", shift: true }, { key: "Enter", mod: true }]

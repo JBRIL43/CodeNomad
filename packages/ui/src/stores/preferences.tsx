@@ -12,7 +12,6 @@ import { loadSpeechCapabilities, resetSpeechCapabilities } from "./speech"
 import { buildSpeechPatch } from "../lib/speech-patch"
 import { normalizeHotkeyOverrides, type HotkeyBinding, type HotkeyOverrides } from "../lib/hotkey-bindings"
 import { normalizeAppearancePreferences, selectAppearancePalette, type Appearance } from "../lib/appearance-preferences"
-import { useNativeHotkeySync } from "../lib/native/hotkeys-sync"
 import { encodeMissionDefaults, normalizeMissionDefaults, validMissionDefaults, type MissionProfileDefault } from "../lib/mission-defaults"
 import { normalizeMissionModels, validMissionModels, parseMissionModel, saveMissionModelRecord, removeMissionModelRecord, type UserMissionModel } from "../lib/mission-model-library"
 import { missionPreferenceExpectation, missionPreferenceValue, type MissionPreferenceKey, type MissionPreferenceExpectation } from "../lib/mission-preferences-document"
@@ -609,7 +608,6 @@ const [uiStateBucket, setUiStateBucket] = createSignal<UiStateBucket>({})
 const [isLoaded, setIsLoaded] = createSignal(false)
 // Mission inputs require a successful UI-owner read, not server/state readiness.
 const [isUiConfigLoaded, setIsUiConfigLoaded] = createSignal(false)
-const [nativeHotkeysReady, setNativeHotkeysReady] = createSignal(false)
 const [uiConfigLoadFailed, setUiConfigLoadFailed] = createSignal(false)
 const missionDefaultsValid = () => isUiConfigLoaded() && validMissionDefaults(missionPreferenceValue(uiConfigBucket(), "missionProfileDefaults"))
 const missionModelsValid = () => isUiConfigLoaded() && validMissionModels(missionPreferenceValue(uiConfigBucket(), "missionModels"))
@@ -675,7 +673,7 @@ async function ensureLoaded(): Promise<void> {
   if (isLoaded()) return
   if (!loadPromise) {
     loadPromise = Promise.all([
-      storage.revalidateUiConfigOwner().then(value => { setUiConfigBucket(value as any); setNativeHotkeysReady(true); setIsUiConfigLoaded(true); setUiConfigLoadFailed(false); return value })
+      storage.revalidateUiConfigOwner().then(value => { setUiConfigBucket(value as any); setIsUiConfigLoaded(true); setUiConfigLoadFailed(false); return value })
         .catch(error => { setUiConfigLoadFailed(true); throw error }),
       storage.loadConfigOwner("server"),
       storage.loadStateOwner("ui"),
@@ -706,7 +704,7 @@ async function patchConfigOwner(owner: string, patch: unknown) {
     if (owner === "ui" && error instanceof ConfigOwnerReconciliationPendingError) { setIsUiConfigLoaded(false); setUiConfigLoadFailed(true) }
     throw error
   }
-  if (owner === "ui") { setUiConfigBucket(updated as any); setNativeHotkeysReady(true) }
+  if (owner === "ui") setUiConfigBucket(updated as any)
   if (owner === "server") setServerConfigBucket(updated as any)
 }
 
@@ -1486,7 +1484,6 @@ const configContextValue: ConfigContextValue = {
 }
 
 export const ConfigProvider: ParentComponent = (props) => {
-  useNativeHotkeySync(uiSettings, nativeHotkeysReady)
   onMount(() => {
     ensureLoaded().catch((error: unknown) => {
       log.error("Failed to initialize settings", error)
@@ -1494,7 +1491,6 @@ export const ConfigProvider: ParentComponent = (props) => {
 
     const unsubUi = storage.onConfigOwnerChanged("ui", (bucket) => {
       setUiConfigBucket(bucket as any)
-      setNativeHotkeysReady(true)
     })
     const unsubServer = storage.onConfigOwnerChanged("server", (bucket) => {
       setServerConfigBucket(bucket as any)

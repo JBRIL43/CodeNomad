@@ -100,7 +100,7 @@ test("native Electron zoom preserves CSS minimums across close/recreate, shared 
   try {
     const module = join(sandbox, "zoom.cjs")
     const root = fileURLToPath(new URL("../../../electron-app/electron/main/", import.meta.url)).replaceAll("\\", "/")
-    await build({ stdin: { contents: `export * from "${root}window-state.ts"; export * from "${root}menu.ts"; export * from "${root}native-hotkeys.ts"; export { makeNativeHotkeySnapshot } from "${root}../../../ui/src/lib/native/hotkeys-contract.ts";`, resolveDir: root },
+    await build({ stdin: { contents: `export * from "${root}window-state.ts"; export * from "${root}menu.ts";`, resolveDir: root },
       outfile: module, bundle: true, platform: "node", format: "cjs", external: ["electron"] })
     const env = { ...process.env, CODENOMAD_TEST_PROFILE: join(sandbox, "profile"), CODENOMAD_TEST_ZOOM_MODULE: module, CODENOMAD_TEST_ZOOM_URL: url }
     delete env.ELECTRON_RUN_AS_NODE
@@ -137,7 +137,6 @@ test("native Electron zoom preserves CSS minimums across close/recreate, shared 
     await page.bringToFront()
     await app.evaluate(() => (globalThis as any).zoomFixture.input(0, "-"))
     assert.equal((await app.evaluate(() => (globalThis as any).zoomFixture.snapshot(0))).zoom, 1)
-    assert.deepEqual(await app.evaluate(() => (globalThis as any).zoomFixture.keyboardActions(0)), ["window-zoom-out"], "the configured native dispatcher executes keyboard zoom once")
     await app.evaluate(() => (globalThis as any).zoomFixture.zoom(0, 0.8))
     await app.evaluate(() => (globalThis as any).zoomFixture.fit(0))
     const saved = await app.evaluate(() => (globalThis as any).zoomFixture.save())

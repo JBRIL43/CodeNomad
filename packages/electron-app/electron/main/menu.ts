@@ -1,6 +1,5 @@
 import { app, BrowserWindow, Menu, shell, type MenuItemConstructorOptions } from "electron"
-import type { NativeHotkeyAction } from "../../../ui/src/lib/native/hotkeys-contract"
-import { isNativeHotkeyRecording } from "./native-hotkeys"
+import { NEW_WINDOW_ACCELERATOR } from "./menu-target"
 import { setWindowZoomLevel } from "./window-state"
 import { setViewMenuState, updateViewMenu, viewMenuItems } from "./view-menu"
 
@@ -15,7 +14,6 @@ interface ApplicationMenuActions {
 const workspaceEnabled = new Map<number, boolean>()
 let applicationMenu: Menu | null = null
 let menuInstalled = false
-let menuRecording = false
 let actions: ApplicationMenuActions | null = null
 
 export type TitlebarMenu = "file" | "edit" | "view" | "window" | "help"
@@ -27,8 +25,7 @@ function target(local: boolean): BrowserWindow | null {
 
 function updateWorkspaceMenuState() {
   const window = target(true)
-  const recording = isNativeHotkeyRecording(BrowserWindow.getFocusedWindow())
-  if (recording !== menuRecording || updateViewMenu(applicationMenu, window)) {
+  if (updateViewMenu(applicationMenu, window)) {
     buildApplicationMenu()
     return
   }
@@ -36,44 +33,6 @@ function updateWorkspaceMenuState() {
   for (const id of ["open-workspace-folder", "open-workspace-terminal", "open-workspace-editor"]) {
     const item = applicationMenu?.getMenuItemById(id)
     if (item) item.enabled = enabled
-  }
-  if (recording) {
-    const disable = (menu: Menu) => {
-      for (const item of menu.items) {
-        if (item.id === "menu-edit") continue
-        if (item.submenu) disable(item.submenu)
-        else if (item.type !== "separator") item.enabled = false
-      }
-    }
-    if (applicationMenu) disable(applicationMenu)
-  }
-}
-
-export function refreshNativeHotkeyMenu(): void {
-  if (menuInstalled) updateWorkspaceMenuState()
-}
-
-export function executeNativeWindowAction(window: BrowserWindow | null, id: NativeHotkeyAction): void {
-  // Focus can change after a native popup was built; never redirect a recording
-  // Preferences window's action to the previous local/MRU window.
-  if (isNativeHotkeyRecording(BrowserWindow.getFocusedWindow()) || isNativeHotkeyRecording(window)) return
-  if (id === "window-new") { actions?.newWindow(); return }
-  if (id === "app-quit") { app.quit(); return }
-  if (id === "window-hide" || id === "window-hide-others") {
-    if (process.platform === "darwin") Menu.sendActionToFirstResponder(id === "window-hide" ? "hide:" : "hideOtherApplications:")
-    return
-  }
-  if (!window || window.isDestroyed()) return
-  switch (id) {
-    case "window-reload": actions?.reload(window); break
-    case "window-force-reload": actions?.forceReload(window); break
-    case "window-devtools": window.webContents.toggleDevTools(); break
-    case "window-zoom-reset": setWindowZoomLevel(window, 0); break
-    case "window-zoom-in": setWindowZoomLevel(window, window.webContents.getZoomLevel() + 0.5); break
-    case "window-zoom-out": setWindowZoomLevel(window, window.webContents.getZoomLevel() - 0.5); break
-    case "window-fullscreen": window.setFullScreen(!window.isFullScreen()); break
-    case "window-minimize": window.minimize(); break
-    case "window-close": window.close(); break
   }
 }
 
@@ -102,23 +61,22 @@ export function createApplicationMenu(menuActions: ApplicationMenuActions) {
   if (menuInstalled) return
   menuInstalled = true
   buildApplicationMenu()
-  app.on("browser-window-focus", refreshNativeHotkeyMenu)
-  app.on("browser-window-blur", refreshNativeHotkeyMenu)
+  app.on("browser-window-focus", updateWorkspaceMenuState)
+  app.on("browser-window-blur", updateWorkspaceMenuState)
 }
 
 function buildApplicationMenu() {
   const isMac = process.platform === "darwin"
-  const sendCommand = (id: string) => () => {
-    if (!isNativeHotkeyRecording(BrowserWindow.getFocusedWindow())) target(true)?.webContents.send("menu:action", id)
+  const sendCommand = (id: string) => () => target(true)?.webContents.send("menu:action", id)
+  const withTarget = (operation: (window: BrowserWindow) => void) => () => {
+    const window = target(false)
+    if (window) operation(window)
   }
-  const nativeItem = (label: string, id: NativeHotkeyAction): MenuItemConstructorOptions => ({
-    label, click: () => executeNativeWindowAction(target(false), id),
-  })
 
   const template: MenuItemConstructorOptions[] = [
     ...(isMac ? [{ label: "CodeNomad", submenu: [
-      { role: "about" as const }, { type: "separator" as const }, nativeItem("Hide CodeNomad", "window-hide"),
-      nativeItem("Hide Others", "window-hide-others"), { role: "unhide" as const }, { type: "separator" as const }, nativeItem("Quit", "app-quit"),
+      { role: "about" as const }, { type: "separator" as const }, { role: "hide" as const },
+      { role: "hideOthers" as const }, { role: "unhide" as const }, { type: "separator" as const }, { role: "quit" as const },
     ] }] : []),
     {
       id: "menu-file",
@@ -132,7 +90,7 @@ function buildApplicationMenu() {
           { label: "Zed", click: sendCommand("open-workspace-editor-zed") },
           { label: "VSCodium", click: sendCommand("open-workspace-editor-vscodium") },
         ] },
-        { type: "separator" }, isMac ? nativeItem("Close", "window-close") : nativeItem("Quit", "app-quit"),
+        { type: "separator" }, isMac ? { role: "close" } : { role: "quit" },
       ],
     },
     { id: "menu-edit", label: "Edit", submenu: [
@@ -143,23 +101,23 @@ function buildApplicationMenu() {
     { id: "menu-view", label: "View", submenu: [
       ...viewMenuItems(sendCommand, target(true)),
       { type: "separator" },
-      nativeItem("Reload", "window-reload"),
-      nativeItem("Force Reload", "window-force-reload"),
-      nativeItem("Toggle Developer Tools", "window-devtools"),
+      { label: "Reload", accelerator: "CmdOrCtrl+R", click: withTarget((window) => actions?.reload(window)) },
+      { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", click: withTarget((window) => actions?.forceReload(window)) },
+      { label: "Toggle Developer Tools", accelerator: isMac ? "Alt+Command+I" : "Ctrl+Shift+I", click: withTarget((window) => window.webContents.toggleDevTools()) },
       { type: "separator" },
-      nativeItem("Actual Size", "window-zoom-reset"),
-      nativeItem("Zoom In", "window-zoom-in"),
-      nativeItem("Zoom Out", "window-zoom-out"),
+      { label: "Actual Size", accelerator: "CmdOrCtrl+0", click: withTarget((window) => setWindowZoomLevel(window, 0)) },
+      { label: "Zoom In", accelerator: "CmdOrCtrl+Plus", click: withTarget((window) => setWindowZoomLevel(window, window.webContents.getZoomLevel() + 0.5)) },
+      { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: withTarget((window) => setWindowZoomLevel(window, window.webContents.getZoomLevel() - 0.5)) },
       { type: "separator" },
-      nativeItem("Toggle Full Screen", "window-fullscreen"),
+      { label: "Toggle Full Screen", accelerator: isMac ? "Ctrl+Command+F" : "F11", click: withTarget((window) => window.setFullScreen(!window.isFullScreen())) },
     ] },
     { id: "menu-window", label: "Window", submenu: [
-      nativeItem("New Window", "window-new"),
-      { label: "New Instance", click: sendCommand("new-instance") },
-      { label: "Command Palette", click: sendCommand("open-command-palette") },
+      { label: "New Window", accelerator: NEW_WINDOW_ACCELERATOR, click: () => actions?.newWindow() },
+      { label: "New Instance", accelerator: "CmdOrCtrl+N", click: sendCommand("new-instance") },
+      { label: "Command Palette", accelerator: "CmdOrCtrl+Shift+P", click: sendCommand("open-command-palette") },
       { type: "separator" },
-      nativeItem("Minimize", "window-minimize"),
-      ...(isMac ? [{ role: "front" as const }] : [nativeItem("Close", "window-close")]),
+      { label: "Minimize", accelerator: "CmdOrCtrl+M", click: withTarget((window) => window.minimize()) },
+      ...(isMac ? [{ role: "front" as const }] : [{ label: "Close", accelerator: "CmdOrCtrl+W", click: withTarget((window) => window.close()) }]),
     ] },
     { id: "menu-help", label: "Help", submenu: [
       { label: "Get Updates...", click: () => { void shell.openExternal("https://github.com/NeuralNomadsAI/CodeNomad/releases").catch(() => {}) } },
@@ -169,7 +127,6 @@ function buildApplicationMenu() {
   ]
 
   applicationMenu = Menu.buildFromTemplate(template)
-  menuRecording = isNativeHotkeyRecording(BrowserWindow.getFocusedWindow())
   Menu.setApplicationMenu(applicationMenu)
   updateWorkspaceMenuState()
 }

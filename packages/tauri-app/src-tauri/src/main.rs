@@ -14,7 +14,6 @@ mod launch;
 mod linux_tls;
 mod local_windows;
 mod managed_node;
-mod native_hotkeys;
 mod native_request;
 mod native_service_start;
 mod notification_badge;
@@ -28,8 +27,6 @@ mod window_constraints;
 mod window_zoom;
 #[cfg(windows)]
 mod windows_browser_accelerators;
-#[cfg(windows)]
-mod windows_hotkey_accelerators;
 mod windows_update;
 mod workspace_open;
 
@@ -53,6 +50,9 @@ use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::webview::{PageLoadEvent, Webview};
 use tauri::{
     AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry,
+};
+use tauri_plugin_global_shortcut::{
+    Code as ShortcutCode, GlobalShortcutExt, Shortcut, ShortcutState,
 };
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -182,11 +182,6 @@ fn update_workspace_menu_state_on_main(app: &AppHandle) {
     // traversal/mutation until the popup has returned and released that borrow.
     if state.native_menu_popup_active.load(Ordering::Relaxed) {
         return;
-    }
-    if app.state::<native_hotkeys::NativeHotkeys>().take_menu_dirty() {
-        if let Err(error) = build_menu(app) {
-            eprintln!("[menu] failed to rebuild hotkey state: {error}");
-        }
     }
     // Native menu tracking can temporarily take focus away from the window.
     // State and command dispatch must resolve the same focused-or-MRU target.
@@ -998,8 +993,6 @@ fn open_remote_window_locked(
         .join("remote")
         .join(profile_hash);
     let badge_binding = notification_badge::prepare_window(&app, &label);
-    app.state::<native_hotkeys::NativeHotkeys>()
-        .prepare_remote_window(&label, window_generation);
     let builder = WebviewWindowBuilder::new(
         &app,
         label.clone(),
@@ -1011,15 +1004,12 @@ fn open_remote_window_locked(
     .on_page_load(move |window, payload| {
         if payload.event() == PageLoadEvent::Started {
             notification_badge::page_started(window.as_ref(), badge_binding);
-            window.app_handle()
-                .state::<native_hotkeys::NativeHotkeys>()
-                .clear_remote_page(window.label(), window_generation);
         }
     })
     .title(title)
     .inner_size(1400.0, 900.0)
     .min_inner_size(client_state::MIN_WINDOW_WIDTH as f64, 600.0);
-    let builder = native_hotkeys::configure(window_zoom::configure(builder));
+    let builder = window_zoom::configure(builder);
     #[cfg(target_os = "macos")]
     let builder = builder.data_store_identifier(profile_identifier(&profile_key));
     let window = match builder.build() {
@@ -1038,29 +1028,8 @@ fn open_remote_window_locked(
         }
     };
 
-    // Register before fallible native setup; failures can destroy this window too.
-    let app_handle = app.clone();
-    let label_for_cleanup = label.clone();
-    let profile_for_cleanup = requested_profile.clone();
-    window.on_window_event(move |event| {
-        if matches!(event, WindowEvent::Focused(_)) {
-            update_workspace_menu_state(&app_handle);
-        }
-        if let WindowEvent::Destroyed = event {
-            remove_remote_window_hotkeys(&app_handle, &label_for_cleanup, window_generation);
-            schedule_remote_window_destroyed_cleanup(
-                app_handle.clone(),
-                label_for_cleanup.clone(),
-                profile_for_cleanup.clone(),
-                window_generation,
-            );
-        }
-    });
-
     #[cfg(windows)]
     windows_browser_accelerators::bind(window.as_ref());
-    #[cfg(windows)]
-    windows_hotkey_accelerators::bind(window.as_ref());
     notification_badge::bind_webview(window.as_ref(), badge_binding);
     window_constraints::register(&window.as_ref().window(), 1.0);
     #[cfg(windows)]
@@ -1111,6 +1080,23 @@ fn open_remote_window_locked(
     {
         schedule_remote_proxy_session_cleanup(app.clone(), label.clone(), session_id.to_string());
     }
+
+    let app_handle = app.clone();
+    let label_for_cleanup = label.clone();
+    let profile_for_cleanup = requested_profile.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Focused(_)) {
+            update_workspace_menu_state(&app_handle);
+        }
+        if let WindowEvent::Destroyed = event {
+            schedule_remote_window_destroyed_cleanup(
+                app_handle.clone(),
+                label_for_cleanup.clone(),
+                profile_for_cleanup.clone(),
+                window_generation,
+            );
+        }
+    });
 
     Ok(())
 }
@@ -1227,7 +1213,6 @@ fn cleanup_failed_remote_window(
     if let Some(window) = window {
         let _ = window.destroy();
     }
-    remove_remote_window_hotkeys(app, label, window_generation);
     if clear_remote_window_metadata(app, label, profile, window_generation) {
         if let Some(session_id) = previous_profile.and_then(RemoteProfileIdentity::proxy_session_id)
         {
@@ -1237,16 +1222,6 @@ fn cleanup_failed_remote_window(
                 session_id.to_string(),
             );
         }
-    }
-}
-
-fn remove_remote_window_hotkeys(app: &AppHandle, label: &str, window_generation: u64) {
-    if app
-        .state::<native_hotkeys::NativeHotkeys>()
-        .remove_remote_window(label, window_generation)
-    {
-        // Registry locks are released before scheduling native menu updates.
-        update_workspace_menu_state(app);
     }
 }
 
@@ -1373,17 +1348,6 @@ fn reload_target_window(app_handle: &AppHandle) {
     let Some(window) = local_windows::targeted_window(app_handle) else {
         return;
     };
-    reload_owned_window(app_handle, &window, false);
-}
-
-fn force_reload_target_window(app_handle: &AppHandle) {
-    let Some(window) = local_windows::targeted_window(app_handle) else {
-        return;
-    };
-    reload_owned_window(app_handle, &window, true);
-}
-
-fn reload_owned_window(app_handle: &AppHandle, window: &tauri::Webview, force: bool) {
     let label = window.label().to_string();
     if identity::local_window_id(&label).is_err() {
         let _ = window.reload();
@@ -1393,17 +1357,37 @@ fn reload_owned_window(app_handle: &AppHandle, window: &tauri::Webview, force: b
     client_state::before_window_navigation(
         app_handle,
         label,
-        if force {
-            client_state::NavigationKind::ForceReload
-        } else {
-            client_state::NavigationKind::Reload
+        client_state::NavigationKind::Reload,
+        None,
+        move |app| {
+            app.get_webview(&target_label)
+                .ok_or_else(|| "local window not found for reload".to_string())?
+                .reload()
+                .map_err(|err| format!("failed to reload local window: {err}"))
         },
+    );
+}
+
+fn force_reload_target_window(app_handle: &AppHandle) {
+    let Some(window) = local_windows::targeted_window(app_handle) else {
+        return;
+    };
+    let label = window.label().to_string();
+    if identity::local_window_id(&label).is_err() {
+        let _ = window.reload();
+        return;
+    }
+    let target_label = label.clone();
+    client_state::before_window_navigation(
+        app_handle,
+        label,
+        client_state::NavigationKind::ForceReload,
         None,
         move |app| {
             let window = app
                 .get_webview(&target_label)
                 .ok_or_else(|| "local window not found for force reload".to_string())?;
-            if let Some(mut url) = window.url().ok().filter(|_| force) {
+            if let Ok(mut url) = window.url() {
                 if should_allow_internal(&url) {
                     let reload_token = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -1478,6 +1462,30 @@ fn target_zoom(app: &AppHandle, webview: &tauri::Webview) -> f64 {
             .ok()
             .and_then(|levels| levels.get(webview.label()).copied())
             .unwrap_or(client_state::DEFAULT_ZOOM_LEVEL)
+    }
+}
+
+fn fullscreen_shortcut() -> Option<Shortcut> {
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(Shortcut::new(None, ShortcutCode::F11))
+    }
+}
+
+fn update_fullscreen_shortcut(app: &AppHandle) {
+    let Some(shortcut) = fullscreen_shortcut() else {
+        return;
+    };
+    let local_focused = app.webviews().into_values().any(|webview| {
+        identity::local_window_id(webview.label()).is_ok()
+            && webview.label() == webview.window().label()
+            && webview.window().is_focused().unwrap_or(false)
+    });
+    if local_focused {
+        let _ = app.global_shortcut().register(shortcut);
+    } else {
+        let _ = app.global_shortcut().unregister(shortcut);
     }
 }
 
@@ -1759,12 +1767,24 @@ fn main() {
         .plugin(single_instance)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+
+                    if fullscreen_shortcut().as_ref() == Some(shortcut) {
+                        toggle_fullscreen_window(app);
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_notification::init())
         .plugin(navigation_guard)
         .manage(local_windows::LocalWindows::default())
         .manage(notification_badge::NotificationBadge::default())
         .manage(window_constraints::WindowConstraints::default())
-        .manage(native_hotkeys::NativeHotkeys::default())
         .manage(preferences_window::PreferencesWindow::default())
         .manage(data_profile_cleanup::CleanupContext::new(
             data_profile_cleanup::ProfileRoots {
@@ -1808,10 +1828,6 @@ fn main() {
         })
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Started {
-                if identity::local_window_id(webview.label()).is_ok() || webview.label() == preferences_window::LABEL {
-                    webview.app_handle().state::<native_hotkeys::NativeHotkeys>().clear(webview.label());
-                    update_workspace_menu_state(webview.app_handle());
-                }
                 webview
                     .app_handle()
                     .state::<AppState>()
@@ -1855,10 +1871,6 @@ fn main() {
         })
         .setup(move |app| {
             let badge_host = Arc::new(app.handle().clone());
-            #[cfg(windows)]
-            {
-                *app.state::<native_hotkeys::NativeHotkeys>().host.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&badge_host);
-            }
             app.state::<notification_badge::NotificationBadge>()
                 .set_host(&badge_host);
             *setup_notification_badge_host
@@ -1876,6 +1888,7 @@ fn main() {
             local_windows::restore_windows(&app.handle())
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
             schedule_launch_drain(app.handle().clone(), Arc::clone(&setup_queue));
+            update_fullscreen_shortcut(&app.handle());
 
             let dev_mode = is_dev_mode();
             let app_handle = app.handle().clone();
@@ -1906,9 +1919,6 @@ fn main() {
             preferences_window::preferences_opener_startup_state,
             window_control,
             window_zoom::owned_webview_zoom,
-            native_hotkeys::set_native_hotkeys,
-            native_hotkeys::native_hotkey_action,
-            native_hotkeys::native_hotkeys_ready,
             popup_titlebar_menu,
             open_remote_window,
             client_state::client_state_claim_access,
@@ -1937,13 +1947,6 @@ fn main() {
             browser_target_release_open
         ])
         .on_menu_event(|app_handle, event| {
-            // Standard editing roles are native, but no application action may
-            // fire while this target's shortcut recorder is acknowledged active.
-            // Menu tracking may temporarily steal focus, especially from the
-            // singleton Preferences window (which is not a local MRU entry).
-            if app_handle.state::<native_hotkeys::NativeHotkeys>().menu_recording() {
-                return;
-            }
             match event.id().0.as_str() {
                 // File menu
                 action @ ("new-instance"
@@ -2017,12 +2020,7 @@ fn main() {
                 }
                 "zoom" => {
                     if let Some(webview) = local_windows::targeted_window(app_handle) {
-                        let window = webview.window();
-                        if cfg!(target_os = "macos") && window.is_maximized().unwrap_or(false) {
-                            let _ = window.unmaximize();
-                        } else {
-                            let _ = window.maximize();
-                        }
+                        let _ = webview.window().maximize();
                     }
                 }
                 "close_window" => {
@@ -2046,10 +2044,13 @@ fn main() {
                 }
                 // App menu (macOS)
                 "hide" => {
-                    let _ = native_hotkeys::hide_application(app_handle, native_hotkeys::Action::WindowHide);
+                    if let Some(webview) = local_windows::targeted_window(app_handle) {
+                        let _ = webview.window().hide();
+                    }
                 }
                 "hide_others" => {
-                    let _ = native_hotkeys::hide_application(app_handle, native_hotkeys::Action::WindowHideOthers);
+                    // TODO: Hide other app windows
+                    println!("Hide Others menu item clicked");
                 }
                 "show_all" => {
                     // TODO: Show all app windows
@@ -2103,6 +2104,7 @@ fn main() {
                         .mark_focused(&app_handle, &label);
                 }
                 update_workspace_menu_state(&app_handle);
+                update_fullscreen_shortcut(&app_handle);
             }
             tauri::RunEvent::WindowEvent {
                 label,
@@ -2164,11 +2166,6 @@ fn main() {
                 ..
             } => {
                 shutdown::local_window_destroyed(&app_handle, &label);
-                if identity::local_window_id(&label).is_ok() || label == preferences_window::LABEL {
-                    app_handle.state::<native_hotkeys::NativeHotkeys>().remove(&label);
-                }
-                // Remote labels are reusable: their owned Destroyed callback
-                // removes hotkeys with the physical window-generation fence.
                 let _ = consume_approved_auxiliary_close(&app_handle, &label);
                 app_handle
                     .state::<AppState>()
@@ -2192,6 +2189,7 @@ fn main() {
                     zoom.remove(&label);
                 }
                 update_workspace_menu_state(&app_handle);
+                update_fullscreen_shortcut(&app_handle);
                 if !app_handle.windows().is_empty() {
                     return;
                 }
@@ -2233,10 +2231,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     )?;
     let get_updates_item =
         MenuItem::with_id(app, "get_updates", "Get Updates...", true, None::<&str>)?;
-    // The UI's validated snapshot is the only keyboard default source. Native
-    // menus retain fixed click actions without shortcut labels/accelerators.
-    let quit_item = MenuItem::with_id(app, "quit", "Quit CodeNomad", true, None::<&str>)?;
-    let close_window_item = MenuItem::with_id(app, "close_window", "Close", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit CodeNomad", true, Some("CmdOrCtrl+Q"))?;
 
     // App menu (macOS only)
     if is_mac {
@@ -2258,14 +2253,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         "new-window",
         "New Window",
         true,
-        None::<&str>,
+        Some("CmdOrCtrl+Shift+N"),
     )?;
     let new_instance_item = MenuItem::with_id(
         app,
         "new-instance",
         "New Instance",
         true,
-        None::<&str>,
+        Some("CmdOrCtrl+N"),
     )?;
     let open_folder_item = MenuItem::with_id(
         app,
@@ -2304,7 +2299,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             .item(&open_terminal_item)
             .item(&open_editor_menu)
             .separator()
-            .item(&close_window_item)
+            .close_window()
             .build()?
     } else {
         SubmenuBuilder::with_id(app, "menu-file", "File")
@@ -2317,23 +2312,23 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     };
     submenus.push(file_menu);
 
-    let reload_item = MenuItem::with_id(app, "reload", "Reload", true, None::<&str>)?;
+    let reload_item = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
     let force_reload_item = MenuItem::with_id(
         app,
         "force_reload",
         "Force Reload",
         true,
-        None::<&str>,
+        Some("CmdOrCtrl+Shift+R"),
     )?;
     let toggle_devtools_item = MenuItem::with_id(
         app,
         "toggle_devtools",
         "Toggle Developer Tools",
         true,
-        None::<&str>,
+        Some("Alt+CmdOrCtrl+I"),
     )?;
     let reset_zoom_item =
-        MenuItem::with_id(app, "reset_zoom", "Actual Size", true, None::<&str>)?;
+        MenuItem::with_id(app, "reset_zoom", "Actual Size", true, Some("CmdOrCtrl+0"))?;
     let zoom_in_item = MenuItem::with_id(
         app,
         "zoom_in",
@@ -2353,14 +2348,20 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         "toggle_fullscreen",
         "Toggle Full Screen",
         true,
-        None::<&str>,
+        if is_mac {
+            Some("Ctrl+Cmd+F")
+        } else {
+            None::<&str>
+        },
     )?;
+    let close_window_item =
+        MenuItem::with_id(app, "close_window", "Close", true, Some("CmdOrCtrl+W"))?;
     let command_palette_item = MenuItem::with_id(
         app,
         "open-command-palette",
         "Command Palette",
         true,
-        None::<&str>,
+        Some("CmdOrCtrl+Shift+P"),
     )?;
 
     // Edit menu with predefined items for standard functionality
@@ -2410,8 +2411,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             .item(&new_instance_item)
             .item(&command_palette_item)
             .separator()
-            .text("minimize", "Minimize")
-            .text("zoom", "Zoom")
+            .minimize()
+            .maximize()
             .build()?
     } else {
         SubmenuBuilder::with_id(app, "menu-window", "Window")
@@ -2419,10 +2420,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             .item(&new_instance_item)
             .item(&command_palette_item)
             .separator()
-            .text("minimize", "Minimize")
-            .text("zoom", "Maximize")
+            .minimize()
+            .maximize()
             .separator()
-            .item(&close_window_item)
+            .close_window()
             .build()?
     };
     submenus.push(window_menu);
@@ -2465,15 +2466,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = MenuBuilder::new(app).items(&submenu_refs).build()?;
 
     app.set_menu(menu)?;
-    // Rebuilding must not reveal a native menu bar under custom titlebars.
-    if !is_mac {
-        for webview in app.webviews().into_values().filter(|webview|
-            webview.label() == webview.window().label()
-                && (identity::local_window_id(webview.label()).is_ok()
-                    || webview.label() == preferences_window::LABEL)) {
-            let _ = webview.window().hide_menu();
-        }
-    }
     Ok(())
 }
 

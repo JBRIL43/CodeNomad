@@ -1,12 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { resolveFocusedLocalTarget, resolveWindowTarget } from "./menu-target"
+import { NEW_WINDOW_ACCELERATOR, resolveFocusedLocalTarget, resolveWindowTarget } from "./menu-target"
 
-test("menu actions target focused then MRU local windows", () => {
+test("New Window has its dedicated shortcut and menu actions target focused then MRU local windows", () => {
   const local = { kind: "local" }
   const other = { kind: "local" }
   const remote = { kind: "remote" }
   const isLocal = (window: { kind: string }) => window.kind === "local"
+  assert.equal(NEW_WINDOW_ACCELERATOR, "CmdOrCtrl+Shift+N")
   assert.equal(resolveFocusedLocalTarget(local, other, isLocal), local)
   assert.equal(resolveFocusedLocalTarget(remote, other, isLocal), null)
   assert.equal(resolveFocusedLocalTarget(remote, remote, isLocal), null)

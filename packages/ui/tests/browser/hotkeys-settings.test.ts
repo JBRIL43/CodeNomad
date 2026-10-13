@@ -31,24 +31,11 @@ before(async () => {
 after(async () => { try { await browser?.close() } finally { await server?.close() } })
 
 const row = (page: Page, id: string) => page.locator(`[data-hotkey-id="${id}"]`)
-async function open(mac = false, native = false) {
+async function open(mac = false) {
   const context = await browser.newContext()
   const page = await context.newPage(), errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
   if (mac) await page.addInitScript(() => Object.defineProperty(navigator, "platform", { value: "MacIntel" }))
-  if (native) await page.addInitScript(() => {
-    const win = window as any
-    win.__CODENOMAD_RUNTIME_HOST__ = "electron"
-    win.__CODENOMAD_WINDOW_CONTEXT__ = "local"
-    win.nativeSnapshots = []
-    win.holdNativeCapture = false
-    win.electronAPI = { async setNativeHotkeys(snapshot: unknown) {
-      win.nativeSnapshots.push(snapshot)
-      if ((snapshot as any).recording && win.holdNativeCapture) {
-        await new Promise<void>(resolve => { win.releaseNativeCapture = () => { win.holdNativeCapture = false; resolve() } })
-      }
-    } }
-  })
   await page.route("**/api/**", route => route.fulfill({ json: {} }))
   await page.goto(url)
   await page.waitForFunction(() => Boolean((window as any).fixture))
@@ -100,8 +87,12 @@ test("rebinds the real dispatcher, updates tooltips, persists and resets with de
     assert.equal(await page.getByRole("textbox", { name: "Prompt", exact: true }).evaluate(element => document.activeElement === element), true)
     await row(page, "new-instance").getByRole("button", { name: "Disable", exact: true }).click()
     await page.waitForFunction(() => document.querySelector("#outside")?.getAttribute("title") === "")
+    assert.deepEqual(await page.evaluate(() => (window as any).fixture.config().settings.hotkeyOverrides["new-instance"]), [])
+    await page.reload()
+    await page.waitForFunction(() => Boolean((window as any).fixture))
+    assert.equal(await page.locator("#outside").getAttribute("title"), "", "disabled binding survives reload")
     await trigger(page, "Control+n")
-    assert.equal(await page.evaluate(() => (window as any).fixture.newInstances()), 1)
+    assert.equal(await page.evaluate(() => (window as any).fixture.newInstances()), 0)
     await page.getByRole("button", { name: "Reset all", exact: true }).click()
     await page.waitForFunction(() => document.querySelector("#outside")?.getAttribute("title") === "Ctrl+N")
     assert.deepEqual(await page.evaluate(() => (window as any).fixture.patches().at(-1)), { settings: { hotkeyOverrides: null } })
@@ -129,6 +120,9 @@ test("warns on both conflicting actions, ignores composition/modifier keys and r
     await row(page, "new-instance").getByRole("button", { name: "Edit", exact: true }).click()
     await row(page, "new-instance").getByRole("button", { name: "Cancel", exact: true }).dispatchEvent("click")
     assert.equal(await page.evaluate(() => (window as any).fixture.isRecording()), false)
+    await row(page, "new-instance").getByRole("button", { name: "Edit", exact: true }).click()
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")))
+    assert.equal(await page.evaluate(() => (window as any).fixture.isRecording()), false, "window blur releases renderer recording")
     await row(page, "new-instance").getByRole("button", { name: "Edit", exact: true }).click()
     await row(page, "new-instance").getByRole("textbox").dispatchEvent("keydown", { key: "Tab", code: "Tab", ctrlKey: true })
     await page.waitForFunction(() => !(window as any).fixture.isRecording() && !document.querySelector(".hotkeys-toolbar button:disabled"))
@@ -171,7 +165,7 @@ test("captures portable Mod on macOS and keeps narrow settings controls square a
 for (const [layout, key, code, physical, other] of [
   ["AZERTY", "&", "Digit1", "1", "app-tab-1"],
   ["QWERTZ", "ü", "BracketLeft", "[", "instance-prev"],
-]) test(`records ${layout} physical identity, warns on both rows and dispatches the recorded binding (#1)`, async () => {
+]) test(`records ${layout} physical identity, warns on both rows and dispatches the recorded binding`, async () => {
   const { context, page, errors } = await open()
   try {
     await row(page, "focus-input").getByRole("button", { name: "Edit", exact: true }).click()
@@ -190,35 +184,6 @@ for (const [layout, key, code, physical, other] of [
     await page.locator("#outside").focus()
     await page.locator("#outside").dispatchEvent("keydown", { key, code, ctrlKey: true })
     assert.equal(await page.getByRole("textbox", { name: "Prompt", exact: true }).evaluate(element => document.activeElement === element), true)
-    assert.deepEqual(errors, [])
-  } finally { await context.close() }
-})
-
-test("native capture waits for suppression acknowledgment, publishes overrides and releases on window blur", async () => {
-  const { context, page, errors } = await open(false, true)
-  try {
-    await page.waitForFunction(() => (window as any).nativeSnapshots.length > 0)
-    assert.equal(await row(page, "window-new").locator("kbd").innerText(), "Ctrl+Alt+N")
-    await page.evaluate(() => { (window as any).holdNativeCapture = true })
-    await row(page, "window-new").getByRole("button", { name: "Edit", exact: true }).click()
-    await page.waitForFunction(() => (window as any).nativeSnapshots.at(-1).recording)
-    assert.equal(await row(page, "window-new").getByRole("textbox").count(), 0, "no capture input before host ack")
-    await page.evaluate(() => (window as any).releaseNativeCapture())
-    const input = row(page, "window-new").getByRole("textbox")
-    await input.waitFor()
-    await input.press("F9")
-    await page.waitForFunction(() => {
-      const snapshot = (window as any).nativeSnapshots.at(-1)
-      return !snapshot.recording && snapshot.bindings["window-new"][0]?.key === "f9"
-    })
-    assert.equal(await row(page, "window-new").locator("kbd").innerText(), "F9")
-    await row(page, "window-new").getByRole("button", { name: "Reset", exact: true }).click()
-    await page.waitForFunction(() => (window as any).nativeSnapshots.at(-1).bindings["window-new"][0]?.key === "n")
-    await row(page, "window-new").getByRole("button", { name: "Edit", exact: true }).click()
-    await row(page, "window-new").getByRole("textbox").waitFor()
-    await page.evaluate(() => window.dispatchEvent(new Event("blur")))
-    await page.waitForFunction(() => !(window as any).nativeSnapshots.at(-1).recording)
-    assert.equal(await page.evaluate(() => (window as any).fixture.isRecording()), false)
     assert.deepEqual(errors, [])
   } finally { await context.close() }
 })

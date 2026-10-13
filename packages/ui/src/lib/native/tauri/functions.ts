@@ -1,13 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog"
-import { invoke } from "@tauri-apps/api/core"
-import type { NativeHotkeySnapshot } from "../hotkeys-contract"
 import type { NativeDialogOptions } from "../native-functions"
 import { getLogger } from "../../logger"
 const log = getLogger("actions")
-
-export async function setTauriNativeHotkeys(snapshot: NativeHotkeySnapshot): Promise<void> {
-  await invoke("set_native_hotkeys", { snapshot })
-}
 
 export async function openTauriNativeDialog(options: NativeDialogOptions): Promise<string | string[] | null> {
   if (typeof window === "undefined") {

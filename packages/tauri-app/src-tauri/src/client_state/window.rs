@@ -298,8 +298,6 @@ pub fn setup_local_window(
 ) -> Result<(), String> {
     #[cfg(windows)]
     crate::windows_browser_accelerators::bind(window.as_ref());
-    #[cfg(windows)]
-    crate::windows_hotkey_accelerators::bind(window.as_ref());
     let client_state = app.state::<ClientState>();
     if !persisted {
         client_state.register_ephemeral_window(window_id.to_string());

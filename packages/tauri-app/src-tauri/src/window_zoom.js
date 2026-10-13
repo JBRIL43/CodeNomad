@@ -1,6 +1,6 @@
 (() => {
   const platform = __HOST_PLATFORM__
-  // Windows keeps native WebView2 wheel/zoom observation. Never attach to
+  // Windows keeps native WebView2 hotkeys/zoom observation. Never attach to
   // subframes, even on WebKit versions that inject initialization scripts there.
   if (platform === 'windows' || window.top !== window) return
 
@@ -20,8 +20,14 @@
     })
   }
 
-  // Managed keyboard zoom belongs exclusively to window_hotkeys.js. This
-  // gesture-only script also serves remote windows, without any fallback keys.
+  window.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.altKey || event.isTrusted === false) return
+    if (!(platform === 'macos' ? event.metaKey : event.ctrlKey && !event.metaKey)) return
+    if (event.key === '=' || event.key === '+') submit(event, 'in')
+    else if (event.key === '-') submit(event, 'out')
+    else if (event.key === '0') submit(event, 'reset')
+  }, { capture: true })
+
   let lastWheel
   function wheel(event) {
     if (event.defaultPrevented || event.isTrusted === false || !event.ctrlKey || event.altKey) return

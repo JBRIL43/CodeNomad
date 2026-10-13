@@ -1,4 +1,4 @@
-import { defaultHotkeyBindings, getHotkeyDefinitions, hotkeyDefinitions, type HotkeyDefaultContext, type HotkeyDefinition } from "./hotkey-definitions"
+import { defaultHotkeyBindings, getHotkeyDefinitions, hotkeyDefinitions, type HotkeyDefinition } from "./hotkey-definitions"
 
 export interface HotkeyBinding {
   key: string
@@ -60,11 +60,11 @@ export function normalizeHotkeyOverrides(input: unknown): HotkeyOverrides {
   return output
 }
 
-export function resolveHotkeyBindings(id: string, overrides: HotkeyOverrides, submitOnEnter = true, context: HotkeyDefaultContext = {}): HotkeyBinding[] {
+export function resolveHotkeyBindings(id: string, overrides: HotkeyOverrides, submitOnEnter = true): HotkeyBinding[] {
   if (!hotkeyDefinitions.some(definition => definition.id === id)) return []
   const bindings = overrides && Object.prototype.hasOwnProperty.call(overrides, id)
     ? normalizeHotkeyOverrides({ [id]: overrides[id] })[id] : undefined
-  return bindings ?? defaultHotkeyBindings(id, submitOnEnter, context)
+  return bindings ?? defaultHotkeyBindings(id, submitOnEnter)
 }
 
 function modifiers(binding: HotkeyBinding, mac: boolean) {
@@ -97,7 +97,6 @@ function bindingsOverlap(a: HotkeyBinding, b: HotkeyBinding, mac: boolean): bool
 }
 
 function scopesOverlap(a: HotkeyDefinition, b: HotkeyDefinition): boolean {
-  if (a.hosts && b.hosts && !a.hosts.some(host => b.hosts!.includes(host))) return false
   if (a.scope === "home" || b.scope === "home") return a.scope === b.scope || a.scope === "app" || b.scope === "app" || a.scope === "instance-tab" || b.scope === "instance-tab"
   // These controls cannot own focus simultaneously. Session/global actions can
   // still run in each of them and therefore genuinely overlap.
@@ -108,16 +107,16 @@ function scopesOverlap(a: HotkeyDefinition, b: HotkeyDefinition): boolean {
   return true
 }
 
-export function findHotkeyConflicts(overrides: HotkeyOverrides, submitOnEnter = true, mac = macPlatform(), context: HotkeyDefaultContext = {}): { ids: string[]; binding: string }[] {
+export function findHotkeyConflicts(overrides: HotkeyOverrides, submitOnEnter = true, mac = macPlatform()): { ids: string[]; binding: string }[] {
   // ponytail: pairwise scan of the bounded catalog; index combos if this grows materially.
   const conflicts = new Map<string, Set<string>>()
-  const definitions = getHotkeyDefinitions({ host: context.host ?? "web", windowContext: context.windowContext })
+  const definitions = getHotkeyDefinitions()
   for (let i = 0; i < definitions.length; i++) {
     const a = definitions[i]
     for (const b of definitions.slice(i + 1)) {
       if (!scopesOverlap(a, b)) continue
-      for (const binding of resolveHotkeyBindings(a.id, overrides, submitOnEnter, context)) {
-        if (!resolveHotkeyBindings(b.id, overrides, submitOnEnter, context).some(other => bindingsOverlap(binding, other, mac))) continue
+      for (const binding of resolveHotkeyBindings(a.id, overrides, submitOnEnter)) {
+        if (!resolveHotkeyBindings(b.id, overrides, submitOnEnter).some(other => bindingsOverlap(binding, other, mac))) continue
         const label = formatHotkeyBinding(binding, mac)
         const ids = conflicts.get(label) ?? new Set<string>()
         ids.add(a.id); ids.add(b.id); conflicts.set(label, ids)

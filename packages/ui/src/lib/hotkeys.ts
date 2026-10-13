@@ -1,20 +1,13 @@
 import { createSignal } from "solid-js"
 import { preferences, patchHotkeyPreferences } from "../stores/preferences"
 import { resolveHotkeyBindings, matchesHotkeyBinding, formatHotkeyBinding, hotkeyOverridePatch, resetHotkeyOverridesPatch, type HotkeyBinding } from "./hotkey-bindings"
-import { runtimeEnv } from "./runtime-env"
-import type { HotkeyDefaultContext } from "./hotkey-definitions"
 
 const [isHotkeyRecording, setHotkeyRecording] = createSignal(false)
 export { isHotkeyRecording, setHotkeyRecording }
 
-export function hotkeyDefaultContext(): HotkeyDefaultContext {
-  const platform = typeof navigator === "undefined" ? "" : navigator.platform.toLowerCase()
-  return { host: runtimeEnv.host, mac: platform.includes("mac"), linux: platform.includes("linux"), windowContext: runtimeEnv.windowContext }
-}
-
 export function effectiveHotkeyBindings(id: string): HotkeyBinding[] {
   const settings = preferences()
-  return resolveHotkeyBindings(id, settings.hotkeyOverrides, settings.promptSubmitOnEnter, hotkeyDefaultContext())
+  return resolveHotkeyBindings(id, settings.hotkeyOverrides, settings.promptSubmitOnEnter)
 }
 
 export function hotkeyLabel(id: string): string {

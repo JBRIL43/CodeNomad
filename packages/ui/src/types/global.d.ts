@@ -39,7 +39,6 @@ declare global {
   }
 
   interface ElectronAPI {
-    setNativeHotkeys?: (snapshot: import("../lib/native/hotkeys-contract").NativeHotkeySnapshot) => Promise<void>
     onCliStatus?: (callback: (data: unknown) => void) => () => void
     onCliError?: (callback: (data: unknown) => void) => () => void
     getCliStatus?: () => Promise<unknown>

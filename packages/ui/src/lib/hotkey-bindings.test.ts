@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { getHotkeyDefinitions, hotkeyDefinitions } from "./hotkey-definitions"
+import { hotkeyDefinitions } from "./hotkey-definitions"
 import { applyMergePatch } from "../../../server/src/settings/merge-patch"
 import { findHotkeyConflicts, formatHotkeyBinding, hotkeyEventKey, hotkeyOverridePatch, matchesHotkeyBinding,
   normalizeHotkeyOverrides, resetHotkeyOverridesPatch, resolveHotkeyBindings, type HotkeyBinding, type HotkeyOverrides } from "./hotkey-bindings"
@@ -22,18 +22,14 @@ describe("hotkey catalog and effective bindings", () => {
     }
   })
 
-  it("is static, unique, filterable and has defaults for every managed action", () => {
+  it("has 49 unique renderer actions with defaults, available without app registration", () => {
+    assert.equal(hotkeyDefinitions.length, 49)
     assert.equal(new Set(hotkeyDefinitions.map(item => item.id)).size, hotkeyDefinitions.length)
-    const renderer = getHotkeyDefinitions({ host: "web" })
-    assert.ok(renderer.length < hotkeyDefinitions.length)
-    assert.ok(getHotkeyDefinitions({ host: "electron" }).some(definition => definition.id === "window-new"))
-    assert.ok(!renderer.some(definition => definition.id === "window-new"))
-    assert.ok(getHotkeyDefinitions({ category: "composer" }).every(item => item.category === "composer"))
-    for (const { id, labelKey } of renderer) {
+    for (const { id, labelKey } of hotkeyDefinitions) {
       assert.ok(labelKey.startsWith("hotkeys.action."))
       assert.ok(resolveHotkeyBindings(id, {}).length, id)
     }
-    assert.equal(getHotkeyDefinitions().find(item => item.id === "app-tab-9")?.labelKey, "hotkeys.action.app-tab")
+    assert.equal(hotkeyDefinitions.find(item => item.id === "app-tab-9")?.labelKey, "hotkeys.action.app-tab")
   })
 
   it("keeps the saved Enter policy as a default, with explicit disabled and custom overrides", () => {
@@ -61,7 +57,7 @@ describe("hotkey catalog and effective bindings", () => {
     for (const value of [null, [], "bad", 1]) assert.deepEqual(normalizeHotkeyOverrides(value), {})
   })
 
-  it("keeps prototype-named keys as strings and rejects malformed keys at every boundary (#2)", () => {
+  it("keeps prototype-named keys as strings and rejects malformed keys at every boundary", () => {
     for (const key of ["constructor", "__proto__", "toString", "custom-key"]) {
       const input = JSON.parse(JSON.stringify({ "new-instance": [{ key, mod: true }] }))
       const normalized = normalizeHotkeyOverrides(input)
@@ -105,6 +101,7 @@ describe("exact hotkey matching and formatting", () => {
     assert.ok(matchesHotkeyBinding({ key: "1", mod: true, shift: true }, event("!", { code: "Digit1", ctrlKey: true, shiftKey: true }), false))
     assert.ok(!matchesHotkeyBinding({ key: "n", mod: true }, event("m", { code: "KeyN", ctrlKey: true }), false))
     assert.ok(matchesHotkeyBinding({ key: "z", mod: true }, event("z", { code: "KeyY", ctrlKey: true }), false))
+    assert.ok(!matchesHotkeyBinding({ key: "=", alt: true, shift: true }, event("+", { code: "Equal", altKey: true, shiftKey: true }), false))
     assert.ok(!matchesHotkeyBinding({ key: "1", mod: true }, event("1", { code: "Digit2", ctrlKey: true }), false))
     assert.ok(!matchesHotkeyBinding({ key: "[", mod: true }, event("[", { code: "BracketRight", ctrlKey: true }), false))
     assert.ok(!matchesHotkeyBinding({ key: "[", mod: true }, event("{", { code: "BracketLeft", ctrlKey: true, shiftKey: true }), false))
@@ -122,22 +119,6 @@ describe("conflicts and deletion patches", () => {
     assert.deepEqual(result, [])
   })
 
-  it("keeps native window defaults separate from project/session defaults on both hosts", () => {
-    for (const host of ["electron", "tauri"]) for (const mac of [false, true]) {
-      const context = { host, mac }
-      assert.deepEqual(findHotkeyConflicts({}, true, mac, context), [])
-      assert.deepEqual(resolveHotkeyBindings("window-new", {}, true, context), [{ key: "n", mod: true, alt: true }])
-      assert.deepEqual(resolveHotkeyBindings("window-close", {}, true, context), [{ key: "w", mod: true, alt: true }])
-      assert.deepEqual(resolveHotkeyBindings("session-new", {}, true, context), [{ key: "n", mod: true, shift: true }])
-      assert.deepEqual(resolveHotkeyBindings("close-instance", {}, true, context), [{ key: "w", mod: true }])
-    }
-    assert.deepEqual(resolveHotkeyBindings("window-new", {}, true, { host: "web" }), [])
-    assert.deepEqual(resolveHotkeyBindings("app-quit", {}, true, { host: "tauri", mac: false }), [])
-    assert.deepEqual(resolveHotkeyBindings("app-quit", {}, true, { host: "electron", linux: true }), [{ key: "q", mod: true }])
-    assert.deepEqual(findHotkeyConflicts({ "window-new": [{ key: "n", mod: true, shift: true }] }, true, false,
-      { host: "electron" }), [{ ids: ["session-new", "window-new"], binding: "Ctrl+Shift+N" }])
-  })
-
   it("reports global/focused and same-scope overlaps, including Mod versus explicit Ctrl", () => {
     const input = { "focus-input": [{ key: "x" }], "prompt-send": [{ key: "x" }], "aside-send": [{ key: "x" }] }
     assert.deepEqual(findHotkeyConflicts(input, true, false), [{ ids: ["focus-input", "prompt-send", "aside-send"], binding: "X" }])
@@ -147,40 +128,23 @@ describe("conflicts and deletion patches", () => {
     assert.deepEqual(findHotkeyConflicts({ "new-instance": [], "browse-folder": [], "instance-next": [{ key: "n", mod: true }] }), [])
   })
 
-  it("warns on captured shifted digits using actual dispatch matches (#3)", () => {
-    for (const mac of [false, true]) {
-      const keyEvent = event("!", { code: "Digit1", ctrlKey: !mac, metaKey: mac, shiftKey: true })
-      const input = normalizeHotkeyOverrides({ "new-instance": [{ key: hotkeyEventKey(keyEvent), mod: true, shift: true }] })
-      const captured = resolveHotkeyBindings("new-instance", input)[0]
-      const tab = resolveHotkeyBindings("session-tab-1", input)[0]
-      assert.equal(captured.key, "1")
-      assert.ok(matchesHotkeyBinding(captured, keyEvent, mac))
-      assert.ok(matchesHotkeyBinding(tab, keyEvent, mac))
-      assert.deepEqual(findHotkeyConflicts(input, true, mac), [
-        { ids: ["new-instance", "session-tab-1"], binding: formatHotkeyBinding(captured, mac) },
-      ])
-    }
+  it("canonicalizes stored digit and bracket aliases for conflict checks", () => {
     for (const [key, alias] of [["1", "Digit1"], ["{", "BracketLeft"], ["}", "BracketRight"]]) {
       const input = { "new-instance": [{ key, alt: true, shift: true }], "instance-next": [{ key: alias, alt: true, shift: true }] }
       assert.ok(findHotkeyConflicts(input, true, false).some(conflict => conflict.ids.includes("new-instance") && conflict.ids.includes("instance-next")))
     }
-    assert.deepEqual(findHotkeyConflicts({ "new-instance": [{ key: "n", alt: true }],
-      "instance-next": [{ key: "m", alt: true }] }, true, false), [])
-    assert.deepEqual(findHotkeyConflicts({ "new-instance": [{ key: "n", alt: true }],
-      "instance-next": [{ key: "KeyM", alt: true }] }, true, false), [])
-    assert.deepEqual(findHotkeyConflicts({ "new-instance": [{ key: "=", alt: true, shift: true }],
-      "instance-next": [{ key: "+", alt: true, shift: true }] }, true, false), [])
-    assert.deepEqual(findHotkeyConflicts({ "new-instance": [{ key: "!", mod: true }] }, true, false), [])
   })
 
-  it("captures AZERTY digits and QWERTZ brackets with identical dispatch/conflict identities (#1)", () => {
-    for (const mac of [false, true]) for (const [key, code, physical, other] of [
-      ["&", "Digit1", "1", "app-tab-1"], ["ü", "BracketLeft", "[", "instance-prev"],
-    ]) {
-      const keyEvent = event(key, { code, ctrlKey: !mac, metaKey: mac })
-      const input = normalizeHotkeyOverrides({ "focus-input": [{ key: hotkeyEventKey(keyEvent), mod: true }] })
+  it("captures AZERTY digits, QWERTZ brackets and shifted digits with identical dispatch/conflict identities", () => {
+    for (const mac of [false, true]) for (const [key, code, physical, other, shiftKey] of [
+      ["&", "Digit1", "1", "app-tab-1", false], ["ü", "BracketLeft", "[", "instance-prev", false],
+      ["!", "Digit1", "1", "session-tab-1", true],
+    ] as const) {
+      const keyEvent = event(key, { code, ctrlKey: !mac, metaKey: mac, shiftKey })
+      const binding = { key: hotkeyEventKey(keyEvent), mod: true, ...(shiftKey ? { shift: true } : {}) }
+      const input = normalizeHotkeyOverrides({ "focus-input": [binding] })
       const captured = resolveHotkeyBindings("focus-input", input)[0]
-      assert.deepEqual(captured, { key: physical, mod: true })
+      assert.deepEqual(captured, { ...binding, key: physical })
       assert.ok(matchesHotkeyBinding(captured, keyEvent, mac))
       assert.ok(matchesHotkeyBinding(resolveHotkeyBindings(other, input)[0], keyEvent, mac))
       const conflicts = findHotkeyConflicts(input, true, mac)
@@ -190,7 +154,7 @@ describe("conflicts and deletion patches", () => {
     }
   })
 
-  it("keeps legacy layout symbols logical without guessing or silently migrating their physical slot (#1)", () => {
+  it("keeps legacy layout symbols logical without guessing or silently migrating their physical slot", () => {
     for (const [key, code, other, shiftKey] of [
       ["&", "Digit1", "app-tab-1", false], ["ü", "BracketLeft", "instance-prev", false],
       ["!", "Digit1", "session-tab-1", true],
