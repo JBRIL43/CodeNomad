@@ -73,10 +73,10 @@ function setup(submitOnEnter = true, pickerOpen = false, overrides: HotkeyOverri
 
 describe("prompt submit shortcuts", () => {
   it("inserts newline and places the caret synchronously without resetting later input", async () => {
-    const input = setup()
+    const input = setup(true, false, { "prompt-newline": [{ key: "F8" }] })
     input.textarea.value = "beforeafter"
     input.textarea.setSelectionRange(6, 6)
-    input.press({ shiftKey: true })
+    input.press({ key: "F8" })
     assert.equal(input.prompt(), "before\nafter")
     assert.equal(input.textarea.selectionStart, 7)
     input.textarea.setSelectionRange(12, 12)
@@ -85,6 +85,23 @@ describe("prompt submit shortcuts", () => {
     assert.equal(input.textarea.selectionStart, 13, "later caret changes remain authoritative")
     input.textarea.setRangeText("Y", input.textarea.selectionStart, input.textarea.selectionEnd, "end")
     assert.equal(input.prompt(), "before\nafterXY")
+  })
+  for (const submitOnEnter of [true, false]) {
+    it(`leaves native newline editing intact with submitOnEnter=${submitOnEnter}`, () => {
+      const input = setup(submitOnEnter)
+      for (const modifiers of submitOnEnter ? [{ shiftKey: true }] : [{}, { shiftKey: true }]) {
+        assert.deepEqual(input.press(modifiers), { prevented: false, stopped: true })
+        assert.equal(input.prompt(), "hello", "the browser owns the edit and resulting input event")
+        assert.deepEqual(input.sends, [])
+      }
+    })
+  }
+  it("does not insert remapped newlines during composition or after consumed keys", () => {
+    const input = setup(true, false, { "prompt-newline": [{ key: "F8" }] })
+    for (const flags of [{ isComposing: true }, { keyCode: 229 }, { defaultPrevented: true }]) {
+      assert.deepEqual(input.press({ key: "F8", ...flags }), { prevented: false, stopped: false })
+      assert.equal(input.prompt(), "hello")
+    }
   })
   it("does not send a key already consumed by a picker that closed during dispatch", () => {
     const input = setup()

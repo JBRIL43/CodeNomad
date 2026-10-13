@@ -41,6 +41,9 @@ export function usePromptKeyDown(options: UsePromptKeyDownOptions) {
   const insertNewlineAtCursor = () => {
     const textarea = options.getTextarea()
     if (!textarea) return
+    // Like attachment insertion, native input publishes the draft and keeps undo.
+    if (typeof document !== "undefined" && document.activeElement === textarea
+      && typeof document.execCommand === "function" && document.execCommand("insertText", false, "\n")) return
     // Change native value and caret atomically, then publish the same value.
     // No deferred focus/selection can overwrite a later gesture or keystroke.
     textarea.setRangeText("\n", textarea.selectionStart, textarea.selectionEnd, "end")
@@ -259,8 +262,10 @@ export function usePromptKeyDown(options: UsePromptKeyDownOptions) {
       return
     }
     if (matches("prompt-newline", e)) {
-      e.preventDefault()
       e.stopPropagation()
+      // Enter/Shift+Enter already insert a newline with native undo and input.
+      if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.altKey) return
+      e.preventDefault()
       insertNewlineAtCursor()
       return
     }
