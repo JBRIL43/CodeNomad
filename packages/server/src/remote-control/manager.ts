@@ -12,9 +12,6 @@ import type { RemoteGateDeps } from "./gate"
 import { RemoteIngress } from "./ingress"
 import type { RemoteControlOwnerLease } from "./owner-lease"
 
-// First use provisions the device tunnel and its certificate, which can take a minute.
-const START_TIMEOUT_MS = 5 * 60_000
-
 type OpenTunnel = (options: OpenRemoteTunnelOptions) => Promise<RemoteTunnel>
 
 interface ManagerOptions {
@@ -162,11 +159,13 @@ export class RemoteControlManager {
     const openTunnel = this.options.openTunnel ?? (async (options: OpenRemoteTunnelOptions) => (await import("./tunnel-runtime")).openRemoteTunnel(options))
     try {
       const target = await this.ingress.start()
+      // No signal: OpenTunnel ignores it while connecting and closes the live
+      // connection whenever it aborts afterwards, so a deadline would only end
+      // a connected tunnel.
       const tunnel = await openTunnel({
         route: this.options.registry.route(),
         target,
         ...(this.options.tunnelApi ? { api: this.options.tunnelApi } : {}),
-        signal: AbortSignal.timeout(START_TIMEOUT_MS),
       })
       if (generation !== this.generation) {
         await tunnel.close()

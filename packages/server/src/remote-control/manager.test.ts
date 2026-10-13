@@ -128,3 +128,31 @@ test("a failed launch keeps the choice, reports the error and retries next time"
   assert.equal(opened.length, 3)
   assert.equal(recovered.status().state, "connected")
 })
+
+// Like OpenTunnel, the fake closes its connection whenever its signal aborts.
+function tunnelBoundTo(signal: AbortSignal | undefined): RemoteTunnel {
+  const closed = new Promise<string | undefined>((resolve) => signal?.addEventListener("abort", () => resolve(undefined), { once: true }))
+  return {
+    url: "https://codenomad-test.device.tunnel.test",
+    hostname: "codenomad-test.device.tunnel.test",
+    status: () => ({ state: "connected", connections: 0 }),
+    closed,
+    close: async () => undefined,
+  }
+}
+
+test("a connected tunnel is not tied to any start deadline", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codenomad-remote-lifetime-"))
+  let opened: OpenRemoteTunnelOptions | undefined
+  const manager = new RemoteControlManager({
+    registry: new RemoteDeviceRegistry(path.join(directory, "remote-control-devices.json")),
+    router: () => null, logger,
+    openTunnel: async (options) => { opened = options; return tunnelBoundTo(options.signal) },
+  })
+  t.after(async () => { await manager.shutdown(); fs.rmSync(directory, { recursive: true, force: true }) })
+  await manager.start()
+  // OpenTunnel ignores a signal while connecting and closes the live tunnel when it aborts.
+  assert.equal(opened?.signal, undefined, "no signal can later close the connected tunnel")
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual({ enabled: manager.status().enabled, state: manager.status().state }, { enabled: true, state: "connected" })
+})
