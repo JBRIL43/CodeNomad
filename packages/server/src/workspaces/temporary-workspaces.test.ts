@@ -136,6 +136,29 @@ test("registry changes are announced and a never-opened empty folder can be aban
   } finally { await h.cleanup() }
 })
 
+test("a discard limited to empty instances refuses conversations or files and deletes an empty one", async () => {
+  const h = await harness()
+  try {
+    const folder = await h.temporary.createFolder()
+    h.workspaces.set("temp", { id: "temp", path: folder })
+    const refused = (code: string) => (error: unknown) => error instanceof TemporaryWorkspaceError && error.code === code && error.statusCode === 409
+    h.setSessions([{ id: "root", location: { directory: folder } }])
+    await assert.rejects(h.temporary.discard("temp", { onlyIfEmpty: true }), refused("temporary_has_conversations"))
+    h.setSessions([])
+    await writeFile(path.join(folder, "notes.md"), "keep me")
+    await assert.rejects(h.temporary.discard("temp", { onlyIfEmpty: true }), refused("temporary_not_empty"))
+    assert.deepEqual(h.removed, [])
+    assert.ok(h.workspaces.has("temp"))
+    assert.ok(h.registry.has(folder))
+    assert.equal(await readFile(path.join(folder, "notes.md"), "utf8"), "keep me")
+
+    await rm(path.join(folder, "notes.md"))
+    await h.temporary.discard("temp", { onlyIfEmpty: true })
+    await assert.rejects(stat(folder), { code: "ENOENT" })
+    assert.equal(h.registry.has(folder), false)
+  } finally { await h.cleanup() }
+})
+
 test("running conversations and duplicate tabs block discarding without removing anything", async () => {
   const h = await harness()
   try {

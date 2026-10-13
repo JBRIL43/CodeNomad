@@ -3,9 +3,11 @@ import { tGlobal } from "../lib/i18n"
 import { getLogger } from "../lib/logger"
 import { serverEvents } from "../lib/server-events"
 import { showAlertDialog, showChoiceDialog } from "./alerts"
-import { closeInstanceTab } from "./app-tabs"
+import { activeAppTabId, closeInstanceTab, getAdjacentAppTabId, getInstanceAppTabId, selectAppTab, selectInstanceTab } from "./app-tabs"
+import { getSessionAttachmentsForInstance } from "./attachments"
 import { createInstance, instances, updateInstance } from "./instances"
 import { addNamedRecentFolder } from "./preferences"
+import { getSessionDraftPromptsForInstance, getSessions } from "./sessions"
 
 const log = getLogger("api")
 
@@ -34,9 +36,14 @@ serverEvents.on("workspace.temporaryChanged", (event) => {
   }
 })
 
+/** Tabs opened within the same minute get "(2)", "(3)"… so they stay distinguishable. */
 function temporaryName(date: Date): string {
   const time = date.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
-  return tGlobal("temporaryInstance.name", { time })
+  const base = tGlobal("temporaryInstance.name", { time })
+  const taken = new Set([...instances().values()].map((instance) => instance.projectName))
+  let name = base
+  for (let index = 2; taken.has(name); index += 1) name = `${base} (${index})`
+  return name
 }
 
 /**
@@ -83,14 +90,34 @@ export async function keepTemporaryInstance(instanceId: string): Promise<boolean
   return true
 }
 
-/** Deletes the temporary folder and its conversations; the server refuses while one runs. */
-async function discardTemporaryInstance(instanceId: string): Promise<boolean> {
+/**
+ * Deletes the temporary folder and its conversations. A visible tab first
+ * yields to its neighbour (or closes, if it is the last tab), so it is hidden
+ * like an inactive tab when the server stops the workspace; the stop handler
+ * itself clears the instance only after its tab has unmounted. A refusal
+ * deletes nothing and restores the tab in place. `quiet` is the unprompted
+ * empty-tab path: it shows no errors and only succeeds when the server finds
+ * no conversation or file.
+ */
+async function discardTemporaryInstance(instanceId: string, quiet = false): Promise<boolean> {
+  const tabId = getInstanceAppTabId(instanceId)
+  const wasActive = activeAppTabId() === tabId
+  const neighbour = wasActive ? getAdjacentAppTabId(tabId) : null
+  if (wasActive && neighbour) selectAppTab(neighbour)
+  else if (wasActive) closeInstanceTab(instanceId)
   try {
-    await serverApi.discardTemporaryWorkspace(instanceId)
+    await serverApi.discardTemporaryWorkspace(instanceId, quiet ? { onlyIfEmpty: true } : {})
   } catch (error) {
-    showFailure("temporaryInstance.discard.failedTitle", error)
-    if (!isNoLongerTemporary(error)) return false
-    // Kept elsewhere: nothing was deleted; close it like an ordinary project.
+    if (!isNoLongerTemporary(error)) {
+      if (instances().has(instanceId)) {
+        if (neighbour) selectAppTab(tabId)
+        else if (wasActive) selectInstanceTab(instanceId)
+      }
+      if (!quiet) showFailure("temporaryInstance.discard.failedTitle", error)
+      return false
+    }
+    // Kept elsewhere: nothing was deleted; it closes like an ordinary project.
+    if (!quiet) showFailure("temporaryInstance.discard.failedTitle", error)
     const instance = instances().get(instanceId)
     if (instance) clearTemporaryMark(instance.folder)
   }
@@ -98,12 +125,22 @@ async function discardTemporaryInstance(instanceId: string): Promise<boolean> {
   return true
 }
 
+/** Unsent composer text or attachments are work an unprompted discard would lose. */
+function hasUnsentWork(instanceId: string): boolean {
+  return Object.keys(getSessionDraftPromptsForInstance(instanceId)).length > 0
+    || Object.values(getSessionAttachmentsForInstance(instanceId)).some((attachments) => attachments.length > 0)
+}
+
 /**
- * A temporary tab cannot be reopened from the recent projects, so closing or
- * stopping it asks whether to keep it as a project or discard it.
- * Cancelling leaves the tab open.
+ * A temporary tab cannot be reopened from the recent projects. An untouched
+ * one (no conversation, file or unsent draft; the server rechecks the first
+ * two) closes and is discarded without asking. Otherwise, or if that quiet
+ * discard does not succeed, closing or stopping it asks whether to keep it as
+ * a project or discard it. Cancelling leaves the tab open.
  */
 export async function closeTemporaryInstance(instanceId: string): Promise<void> {
+  if (getSessions(instanceId).length === 0 && !hasUnsentWork(instanceId)
+    && await discardTemporaryInstance(instanceId, true)) return
   const choice = await showChoiceDialog(tGlobal("temporaryInstance.close.message"), [
     { value: "discard", label: tGlobal("temporaryInstance.close.discard"), tone: "danger" },
     { value: "keep", label: tGlobal("temporaryInstance.close.keep"), tone: "primary" },
