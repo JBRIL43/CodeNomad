@@ -276,6 +276,8 @@ export const instanceMessages = {
   "instanceShell.diff.switchToUnified": "עבור לתצוגה מאוחדת",
   "instanceShell.diff.enableWordWrap": "הפעל גלישת מילים",
   "instanceShell.diff.disableWordWrap": "כבה גלישת מילים",
+  "instanceShell.diff.whitespaceOnly": "בקובץ זה השתנו רק רווחים (הזחה או רווחים בסוף שורה).",
+  "instanceShell.diff.lineEndingsOnly": "בקובץ זה השתנו רק סימני סוף השורה (או סימן סדר בתים); הטקסט שלו זהה.",
   "instanceShell.worktree.create": "+ צור worktree",
   "instanceShell.worktree.unavailable": "לא זמין",
   "instanceShell.worktree.create.fromCurrentBranch": "חדש מהענף הנוכחי",

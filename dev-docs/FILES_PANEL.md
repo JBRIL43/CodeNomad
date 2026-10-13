@@ -70,6 +70,67 @@ preview replaces the file reader; opening a file returns the browser to chat mod
 Cancelling or hiding a view fences pending reads. Workspace/local-diff readers
 refresh on filesystem invalidation, while commit contents remain immutable.
 
+### Hide whitespace-only changes
+
+Settings → Advanced "Hide whitespace-only changes" (`hideDiffWhitespaceChanges`,
+enabled by default and stored with the other UI settings) mainly keeps the
+Changes list focused on real edits; diffs follow it as a secondary effect.
+
+- **List (main effect).** The status read sends `?hideWhitespace=1`, and only
+  then the server adds one bounded worker query, `git diff --numstat -z
+  --ignore-all-space` (worktree vs index), with no per-file processes. It starts
+  only after the ordinary unstaged numstat resolves, so a write between the two
+  reads can only make the hidden state follow the newer content. An unstaged
+  tracked `modified` text file with a non-zero ordinary numstat gets
+  `unstagedWhitespaceOnly` only when it is **absent** from the `-w` output. Git
+  omits a file there when its content differs only by whitespace and its mode is
+  unchanged. Git's `-w` covers CR (CRLF-only edits), whitespace inside a line and
+  a removed or added final newline (`"x\n"` → `"x"`).
+- **Listed records stay visible.** Any `-w` record, including `0 0`, keeps the
+  file visible: Git lists a worktree mode change combined with a whitespace-only
+  edit, and an unmerged path (for example a conflict resolved with "ours" and
+  re-indented but not added), as `0 0`. Entries whose staged side is `unmerged`
+  are skipped regardless of record order. Older Git versions that print `0 0` for
+  every whitespace-only file therefore simply never hide anything (fail-open), as
+  does a failed detection read. Untracked, added/deleted/renamed and binary (`-`)
+  changes are never flagged. The server singleflight key and the UI read include
+  the option.
+- **Staged files stay visible.** Detection never runs for index vs HEAD: a
+  commit (`git commit`, staged content only) therefore never includes a change
+  the list does not show. A file staged with real content and re-indented
+  afterwards shows only its staged row; a staged chmod (`git update-index
+  --chmod`) likewise stays visible in the staged section.
+- **Bulk actions.** `useGitChanges` exposes only the visible inventory, so the
+  file count, section counts, row selection, range/bulk "stage selected" and
+  drag-and-drop can never target a hidden file; hidden files stay unstaged.
+  There is no separate "stage all" command.
+- **Live toggle.** Switching the option refreshes a visible Changes list (a read
+  made under the previous option is discarded) or drops the cached rows so the
+  next activation reads again; turning it off shows flagged rows immediately.
+  Filesystem invalidation and explicit refresh are unchanged.
+- **Diffs (secondary effect).** Changes and Commits share the diff reader, which
+  maps the option to Monaco's native `ignoreTrimWhitespace`: lines that differ
+  only by indentation or trailing spaces/tabs compare equal, while whitespace
+  inside a line remains visible. The diff content read is unchanged and image
+  diffs ignore the setting. Staging and commits always act on exact content.
+
+Monaco never draws line-ending (CRLF/LF/CR) or leading byte-order-mark
+differences, whatever the setting; on Windows the Git LF blob often differs from
+CRLF worktree bytes only this way. `file-viewer/diff-whitespace.ts` mirrors the
+model's BOM stripping, line splitting, space/tab trimming and empty-side
+whole-file change in linear time, so the reader is never silently blank: one
+note reports line-ending/BOM-only files and another states that only whitespace
+(indentation or trailing spaces) changed. Both are factual and shown whatever the
+setting, never advice to change it, because Monaco 0.52's legacy diff has an
+upstream limitation: in show mode it compares the original line with itself, so
+same-length trailing-whitespace swaps (`"foo\t"` → `"foo "`, `"\t"` → `" "`) are
+never drawn in either mode. The classifier deliberately does not replicate
+Monaco's loops to predict exactly what is drawn. Monaco itself defaults to
+ignoring trim whitespace; the viewer always passes the option explicitly, so
+turning the setting off shows the other whitespace changes. With the option on,
+these notes mostly concern Commits diffs and staged files, since unstaged
+whitespace-only files are no longer listed.
+
 Git image previews retain base64 bytes for the actual compared revisions:
 HEAD/index for staged changes, index/worktree for unstaged changes, and the
 parent/commit blobs for history. `git-image-preview.ts` uses bounded worker reads
@@ -144,5 +205,20 @@ insertion into the composer remain available.
   continuity plus unborn-repository inventory, status and history.
 - `tests/browser/git-history.test.ts`: the real panel/readers and SessionView,
   draft preservation, late-read/session fencing, filesystem refresh and keyboard
-  tree navigation. The design fixture remains available through
+  tree navigation. Its `?advanced` fixture mode renders the real Advanced settings
+  section: by default whitespace/CRLF-only rows leave the list and its counts, a
+  range "stage selected" spanning them stages only visible files; turning the
+  option off lists them with their factual whitespace and line-ending notes, and
+  the shared Commits reader follows it.
+- `workspaces/git-status.test.ts`: real repositories with whitespace-only,
+  CRLF-only, final-newline-only, real, binary, untracked, staged and
+  staged-then-reindented files; a worktree mode change and an unmerged
+  "ours"-resolved re-indent (both listed `0 0`, kept visible) and a staged chmod;
+  the `-w` read starting after the unstaged numstat; option-keyed singleflight
+  and fail-open detection.
+- `useGitChanges.test.ts` / `git-changes-model.test.ts`: the option in the read,
+  staged rows kept, bulk targets, live toggling and stale-option responses;
+  `file-viewer/diff-whitespace.test.ts` (CRLF/CR/BOM, empty sides, linear time on
+  long blank runs) and `settings/behavior-registry.test.ts` cover the in-diff
+  classifier and the preference. The design fixture remains available through
   `node scripts/preview-git-history.mjs` with synthetic data only.

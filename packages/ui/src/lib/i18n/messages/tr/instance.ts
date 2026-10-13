@@ -249,6 +249,8 @@ export const instanceMessages = {
   "instanceShell.diff.switchToUnified": "Birleşik görünüme geç",
   "instanceShell.diff.enableWordWrap": "Sözcük kaydırmayı etkinleştir",
   "instanceShell.diff.disableWordWrap": "Sözcük kaydırmayı devre dışı bırak",
+  "instanceShell.diff.whitespaceOnly": "Bu dosyada yalnızca boşluklar değişti (girinti veya satır sonundaki boşluklar).",
+  "instanceShell.diff.lineEndingsOnly": "Bu dosyada yalnızca satır sonları (veya bir bayt sırası işareti) değişti; metni aynıdır.",
   "instanceShell.worktree.create": "+ Worktree oluştur",
   "instanceShell.worktree.unavailable": "Kullanılamıyor",
   "instanceShell.worktree.create.fromCurrentBranch": "Geçerli daldan yeni",

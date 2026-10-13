@@ -276,6 +276,8 @@ export const instanceMessages = {
   "instanceShell.diff.switchToUnified": "Passer à la vue unifiée",
   "instanceShell.diff.enableWordWrap": "Activer le retour à la ligne",
   "instanceShell.diff.disableWordWrap": "Désactiver le retour à la ligne",
+  "instanceShell.diff.whitespaceOnly": "Seuls des espaces ont changé dans ce fichier (indentation ou espaces en fin de ligne).",
+  "instanceShell.diff.lineEndingsOnly": "Seules les fins de ligne (ou une marque d'ordre des octets) ont changé dans ce fichier ; son texte est identique.",
   "instanceShell.worktree.create": "+ Créer un worktree",
   "instanceShell.worktree.unavailable": "Indisponible",
   "instanceShell.worktree.create.fromCurrentBranch": "Nouveau depuis la branche actuelle",
