@@ -53,6 +53,49 @@ test("ArrowUp keeps a draft; sent history is recalled only from an empty compose
   } finally { await page.close() }
 })
 
+test("newline insertion cannot restore a stale caret over subsequent typing", async () => {
+  const { page, errors, input } = await setup()
+  try {
+    await input.fill("beforeafter")
+    const immediate = await input.evaluate(element => {
+      const textarea = element as HTMLTextAreaElement
+      textarea.setSelectionRange(6, 6)
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", shiftKey: true, bubbles: true, cancelable: true }))
+      const caret = textarea.selectionStart
+      textarea.setRangeText("X", textarea.value.length, textarea.value.length, "end")
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "X" }))
+      return caret
+    })
+    assert.equal(immediate, 7, "the insertion updates the caret inside the same event")
+    await page.waitForTimeout(30)
+    assert.equal(await input.evaluate(element => (element as HTMLTextAreaElement).selectionStart), 13)
+    await input.pressSequentially("Y")
+    assert.equal(await input.inputValue(), "before\nafterXY")
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
+test("global type-to-focus and shell triggers ignore IME and consumed keys", async () => {
+  const { page, errors, input } = await setup()
+  try {
+    await input.fill("")
+    const placeholder = await input.getAttribute("placeholder")
+    for (const flags of [{ isComposing: true }, { keyCode: 229 }, { consumed: true }]) {
+      await page.evaluate(flags => {
+        const field = document.querySelector<HTMLTextAreaElement>("textarea")!
+        field.blur()
+        const event = new KeyboardEvent("keydown", { key: "!", bubbles: true, cancelable: true, ...flags })
+        if ("consumed" in flags) event.preventDefault()
+        document.body.dispatchEvent(event)
+      }, flags)
+      assert.equal(await input.evaluate(element => document.activeElement === element), false)
+      assert.equal(await input.getAttribute("placeholder"), placeholder, "ignored keys cannot enter shell mode")
+      assert.equal(await input.inputValue(), "")
+    }
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
 test("a paste after undoing another sends the visible paste, never the undone one", async () => {
   const { page, errors, input } = await setup()
   const sent: string[] = []

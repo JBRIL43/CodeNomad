@@ -16,7 +16,8 @@ import { ClientStateNavigationController } from "./client-state-navigation"
 import { setupCliIPC } from "./ipc"
 import { notificationBadgeBitmap, setupNotificationBadgeIPC } from "./notification-badge"
 import { LocalWindowRegistry, type LocalWindowRecord } from "./local-window-registry"
-import { clearWorkspaceMenuWindow, createApplicationMenu, setWorkspaceMenuEnabled } from "./menu"
+import { clearWorkspaceMenuWindow, createApplicationMenu, executeNativeWindowAction, refreshNativeHotkeyMenu, setWorkspaceMenuEnabled } from "./menu"
+import { installNativeHotkeys } from "./native-hotkeys"
 import { resolveFocusedLocalTarget, resolveWindowTarget } from "./menu-target"
 import { MultiwindowLifecycle } from "./multiwindow-lifecycle"
 import { decideNavigation, requireHttpUrl } from "./navigation-security"
@@ -352,6 +353,8 @@ function runPrimary(firstIntent: LaunchIntent) {
     bindClientState(window)
     lifecycle.attach(record)
     installWindowZoomInput(window, (level) => tracker ? tracker.setZoomLevel(level) : setWindowZoomLevel(window, level))
+    installNativeHotkeys(window, executeNativeWindowAction,
+      () => Boolean(registry.resolve(window.webContents)) && isAllowedRendererOrigin(window.webContents.getURL(), getAllowedOrigins(window)), refreshNativeHotkeyMenu)
     setupNavigationGuards(window, navigation, getAllowedOrigins, getLoadingUrl)
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
       if (!secureBrowserWebview(webPreferences, params)) {
@@ -424,6 +427,7 @@ function runPrimary(firstIntent: LaunchIntent) {
 
   setupCliIPC(cli, {
     resolveLocal: (sender) => registry.resolve(sender), resolvePreferences: (sender) => preferencesWindows.resolve(sender), getAllowedOrigins,
+    resolveRemote: (sender) => remoteWindows.resolve(sender),
     openRemoteWindow, newWindow: () => intentQueue.enqueue({ newWindow: true, folders: [] }),
     nextFolder: (id) => registry.nextFolder(id), acknowledgeFolder: (id, folder, opened) => registry.acknowledgeFolder(id, folder, opened),
     browserController,
@@ -565,6 +569,8 @@ function runPrimary(firstIntent: LaunchIntent) {
       installWindowSizeConstraints(window, () => screen.getDisplayMatching(window.getBounds()).workArea)
       installWindowZoomInput(window, (level) => setWindowZoomLevel(window, level))
       remoteWindows.register(payload.id, window, payload.proxySessionId)
+      installNativeHotkeys(window, executeNativeWindowAction,
+        () => remoteWindows.resolve(window.webContents) === window && isAllowedRendererOrigin(window.webContents.getURL(), getAllowedOrigins(window)), refreshNativeHotkeyMenu, false)
       bindNotificationBadge(window)
       if (isMac) configureMediaPermissionHandlers(() => BrowserWindow.getAllWindows()
         .filter((candidate) => candidate.webContents.session === remoteSession)
@@ -609,6 +615,8 @@ function runPrimary(firstIntent: LaunchIntent) {
     const webContentsId = window.webContents.id
     if (!isMac) window.setMenuBarVisibility(false)
     preferencesWindows.register(window, request, openerId)
+    installNativeHotkeys(window, executeNativeWindowAction,
+      () => preferencesWindows.resolve(window.webContents) === window && isAllowedRendererOrigin(window.webContents.getURL(), getAllowedOrigins(window)), refreshNativeHotkeyMenu)
     const tracker = new WindowStateTracker(window, {
       activeWindowId: "preferences",
       saveWindowState: state => clientState.savePreferencesWindow(state),

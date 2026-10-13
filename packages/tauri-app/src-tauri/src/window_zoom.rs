@@ -81,7 +81,7 @@ fn remote_origin_allowed(current: &Url, registered: Option<&str>) -> bool {
     matches!(current.scheme(), "http" | "https") && crate::same_origin(current, registered)
 }
 
-fn require_owned_webview(webview: &Webview, app: &AppHandle) -> Result<Url, String> {
+pub(crate) fn require_owned_webview(webview: &Webview, app: &AppHandle) -> Result<Url, String> {
     let state = app.state::<crate::AppState>();
     let registered_local = app
         .state::<crate::local_windows::LocalWindows>()

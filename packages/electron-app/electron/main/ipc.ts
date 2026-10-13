@@ -7,6 +7,7 @@ import { popupTitlebarMenu, setWorkspaceMenuEnabled, type TitlebarMenu } from ".
 import { requireHttpUrl } from "./navigation-security"
 import { validateMainFrame } from "./ipc-security"
 import type { BrowserController } from "./browser-controller"
+import { setupNativeHotkeyIPC } from "./native-hotkeys"
 
 interface LocalSender {
   id: string
@@ -16,6 +17,7 @@ interface LocalSender {
 interface CliIPCDependencies {
   resolveLocal(sender: IpcMainInvokeEvent["sender"]): LocalSender | undefined
   resolvePreferences?(sender: IpcMainInvokeEvent["sender"]): BrowserWindow | undefined
+  resolveRemote?(sender: IpcMainInvokeEvent["sender"]): BrowserWindow | undefined
   getAllowedOrigins(window: BrowserWindow): string[]
   openRemoteWindow(payload: { id: string; name: string; baseUrl: string; entryUrl?: string; proxySessionId?: string; skipTlsVerify: boolean }): Promise<void>
   newWindow(): Promise<unknown>
@@ -57,6 +59,9 @@ async function resolveLocalWorkspaceFolder(window: BrowserWindow, cliManager: Cl
 }
 
 export function setupCliIPC(cliManager: CliProcessManager, dependencies: CliIPCDependencies) {
+  setupNativeHotkeyIPC(ipcMain,
+    sender => dependencies.resolveLocal(sender)?.window ?? dependencies.resolvePreferences?.(sender) ?? dependencies.resolveRemote?.(sender),
+    dependencies.getAllowedOrigins)
   let wakeLockId: number | null = null
   const wakeLockWindows = new Set<number>()
   const wakeCleanupInstalled = new Set<number>()

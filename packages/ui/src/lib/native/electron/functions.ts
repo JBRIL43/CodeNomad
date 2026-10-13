@@ -1,6 +1,12 @@
 import type { NativeDialogOptions } from "../native-functions"
 import { getLogger } from "../../logger"
+import type { NativeHotkeySnapshot } from "../hotkeys-contract"
 const log = getLogger("actions")
+
+export async function setElectronNativeHotkeys(snapshot: NativeHotkeySnapshot): Promise<void> {
+  if (!window.electronAPI?.setNativeHotkeys) throw new Error("Native hotkey support is unavailable")
+  await window.electronAPI.setNativeHotkeys(snapshot)
+}
 
 
 interface ElectronDialogResult {

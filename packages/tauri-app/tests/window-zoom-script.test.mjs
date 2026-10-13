@@ -84,7 +84,7 @@ for (const platform of ["macos", "linux"]) {
   for (const context of ["local", "remote", "preferences"]) {
     test(`${platform}/${context}: actual owned script starts at restored host zoom and tracks gestures`, async () => {
       const h = harness(platform, { context, zoom: 1.6 })
-      const plus = h.emit("keydown", { key: "=", ...modifier })
+      const plus = h.emit("wheel", { ctrlKey: true, deltaY: -120 })
       assert.ok(plus.defaultPrevented && plus.stopped)
       await h.flush()
       assert.equal(h.state.zoom, 1.8)
@@ -92,7 +92,7 @@ for (const platform of ["macos", "linux"]) {
       assert.deepEqual(h.state.minimum, context === "preferences" ? [760, 560] : [702, 1080])
       // Native menu changes between gestures must not be overwritten by a JS counter.
       h.state.zoom = 2.5
-      h.emit("keydown", { key: "-", ...modifier })
+      h.emit("wheel", { ctrlKey: true, deltaY: 120 })
       await h.flush()
       assert.equal(h.state.zoom, 2.3)
       const wheel = h.emit("mousewheel", { ctrlKey: true, deltaY: -120 })
@@ -102,10 +102,6 @@ for (const platform of ["macos", "linux"]) {
       h.emit("wheel", { ctrlKey: true, deltaY: 120 })
       await h.flush()
       assert.equal(h.state.zoom, 2.3)
-      h.emit("keydown", { key: "0", ...modifier })
-      await h.flush()
-      assert.equal(h.state.zoom, 1)
-      assert.deepEqual(h.state.minimum, context === "preferences" ? [760, 560] : [390, 600])
       assert.ok(h.packets.every((p) => p.command === "owned_webview_zoom" && !("label" in p) && !("value" in p)))
     })
   }
@@ -124,10 +120,10 @@ for (const platform of ["macos", "linux"]) {
 
   test(`${platform}: rapid input serializes; bounds and native defaults are not doubled`, async () => {
     const h = harness(platform, { zoom: 4.8 })
-    for (const key of ["+", "+", "-", "0", "-"]) h.emit("keydown", { key, ...modifier })
+    for (const deltaY of [-120, -120, 120, 120, 120]) h.emit("wheel", { ctrlKey: true, deltaY })
     await h.flush()
     assert.equal(h.state.maxInFlight, 1)
-    assert.equal(h.state.zoom, .8)
+    assert.equal(h.state.zoom, 4.4)
     h.state.zoom = .25
     h.emit("mousewheel", { ctrlKey: true, deltaY: 120 })
     await h.flush()
@@ -148,18 +144,18 @@ for (const platform of ["macos", "linux"]) {
   test(`${platform}: bootstrap/denied invoke fails closed without replay or generic fallback`, async () => {
     for (const options of [{ internals: false }, { reject: true }]) {
       const h = harness(platform, options)
-      assert.ok(h.emit("keydown", { key: "+", ...modifier }).defaultPrevented)
+      assert.ok(h.emit("wheel", { ctrlKey: true, deltaY: -120 }).defaultPrevented)
       await h.flush()
       assert.equal(h.state.zoom, 1)
       assert.ok(h.packets.length <= 1)
       assert.ok(h.packets.every((p) => p.command === "owned_webview_zoom"))
     }
     const h = harness(platform, { reject: true })
-    h.emit("keydown", { key: "+", ...modifier })
+    h.emit("wheel", { ctrlKey: true, deltaY: -120 })
     await h.flush()
     // A later fresh gesture can succeed; the failed mutation is never replayed.
     h.window.__TAURI_INTERNALS__.invoke = async (command, payload) => h.packets.push({ command, ...payload })
-    h.emit("keydown", { key: "-", ...modifier })
+    h.emit("wheel", { ctrlKey: true, deltaY: 120 })
     await h.flush()
     assert.deepEqual(h.packets.map((p) => p.action), ["in", "out"])
   })

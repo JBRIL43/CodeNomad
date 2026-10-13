@@ -244,19 +244,7 @@ export function restoreWindowState(window: BrowserWindow, state: NativeWindowSta
 
 export function installWindowZoomInput(window: BrowserWindow, setZoomLevel: (level: number) => void): void {
   const changeZoom = (delta: number) => setZoomLevel(window.webContents.getZoomLevel() + delta)
-  window.webContents.on("before-input-event", (event, input) => {
-    if (input.type !== "keyDown" || (!input.control && !input.meta) || input.alt) return
-    if (input.key === "+" || input.key === "=") {
-      event.preventDefault()
-      changeZoom(0.5)
-    } else if (input.key === "-") {
-      event.preventDefault()
-      changeZoom(-0.5)
-    } else if (input.key === "0") {
-      event.preventDefault()
-      setZoomLevel(0)
-    }
-  })
+  // Keyboard zoom belongs to the validated per-window native hotkey map.
   window.webContents.on("zoom-changed", (event, direction) => {
     event.preventDefault()
     changeZoom(direction === "in" ? 0.5 : -0.5)

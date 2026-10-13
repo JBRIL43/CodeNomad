@@ -10,7 +10,9 @@ import {
 import { getLogger } from "../lib/logger"
 import { loadSpeechCapabilities, resetSpeechCapabilities } from "./speech"
 import { buildSpeechPatch } from "../lib/speech-patch"
+import { normalizeHotkeyOverrides, type HotkeyBinding, type HotkeyOverrides } from "../lib/hotkey-bindings"
 import { normalizeAppearancePreferences, selectAppearancePalette, type Appearance } from "../lib/appearance-preferences"
+import { useNativeHotkeySync } from "../lib/native/hotkeys-sync"
 import { encodeMissionDefaults, normalizeMissionDefaults, validMissionDefaults, type MissionProfileDefault } from "../lib/mission-defaults"
 import { normalizeMissionModels, validMissionModels, parseMissionModel, saveMissionModelRecord, removeMissionModelRecord, type UserMissionModel } from "../lib/mission-model-library"
 import { missionPreferenceExpectation, missionPreferenceValue, type MissionPreferenceKey, type MissionPreferenceExpectation } from "../lib/mission-preferences-document"
@@ -109,12 +111,12 @@ export type SpeechSettingsUpdate = Partial<Omit<SpeechSettings, "provider" | "ha
 
 export interface UiSettings {
   showThinkingBlocks: boolean
-  showKeyboardShortcutHints: boolean
   thinkingBlocksExpansion: ExpansionPreference
   showMessageTimeline: boolean
   showTimelineTools: boolean
   holdLongAssistantReplies: boolean
   promptSubmitOnEnter: boolean
+  hotkeyOverrides: HotkeyOverrides
   followUpBehavior: FollowUpBehavior
   showPromptVoiceInput: boolean
   locale?: string
@@ -220,12 +222,12 @@ const defaultToolCallExpansionDefaults: ToolCallExpansionDefaults = {
 
 const defaultUiSettings: UiSettings = {
   showThinkingBlocks: false,
-  showKeyboardShortcutHints: false,
   thinkingBlocksExpansion: "collapsed",
   showMessageTimeline: true,
   showTimelineTools: false,
   holdLongAssistantReplies: true,
   promptSubmitOnEnter: true,
+  hotkeyOverrides: {},
   followUpBehavior: "steer",
   showPromptVoiceInput: true,
   diffViewMode: "split",
@@ -322,13 +324,12 @@ function normalizeUiSettings(input?: Partial<UiSettings> | null): UiSettings {
       : "expanded"
   return {
     showThinkingBlocks: sanitized.showThinkingBlocks ?? defaultUiSettings.showThinkingBlocks,
-    showKeyboardShortcutHints:
-      sanitized.showKeyboardShortcutHints ?? defaultUiSettings.showKeyboardShortcutHints,
     thinkingBlocksExpansion: sanitized.thinkingBlocksExpansion ?? defaultUiSettings.thinkingBlocksExpansion,
     showMessageTimeline: sanitized.showMessageTimeline ?? defaultUiSettings.showMessageTimeline,
     showTimelineTools: sanitized.showTimelineTools ?? defaultUiSettings.showTimelineTools,
     holdLongAssistantReplies: sanitized.holdLongAssistantReplies ?? defaultUiSettings.holdLongAssistantReplies,
     promptSubmitOnEnter: sanitized.promptSubmitOnEnter ?? defaultUiSettings.promptSubmitOnEnter,
+    hotkeyOverrides: normalizeHotkeyOverrides(sanitized.hotkeyOverrides),
     followUpBehavior:
       sanitized.followUpBehavior === "queue" || sanitized.followUpBehavior === "steer"
         ? sanitized.followUpBehavior
@@ -608,6 +609,7 @@ const [uiStateBucket, setUiStateBucket] = createSignal<UiStateBucket>({})
 const [isLoaded, setIsLoaded] = createSignal(false)
 // Mission inputs require a successful UI-owner read, not server/state readiness.
 const [isUiConfigLoaded, setIsUiConfigLoaded] = createSignal(false)
+const [nativeHotkeysReady, setNativeHotkeysReady] = createSignal(false)
 const [uiConfigLoadFailed, setUiConfigLoadFailed] = createSignal(false)
 const missionDefaultsValid = () => isUiConfigLoaded() && validMissionDefaults(missionPreferenceValue(uiConfigBucket(), "missionProfileDefaults"))
 const missionModelsValid = () => isUiConfigLoaded() && validMissionModels(missionPreferenceValue(uiConfigBucket(), "missionModels"))
@@ -673,7 +675,7 @@ async function ensureLoaded(): Promise<void> {
   if (isLoaded()) return
   if (!loadPromise) {
     loadPromise = Promise.all([
-      storage.revalidateUiConfigOwner().then(value => { setUiConfigBucket(value as any); setIsUiConfigLoaded(true); setUiConfigLoadFailed(false); return value })
+      storage.revalidateUiConfigOwner().then(value => { setUiConfigBucket(value as any); setNativeHotkeysReady(true); setIsUiConfigLoaded(true); setUiConfigLoadFailed(false); return value })
         .catch(error => { setUiConfigLoadFailed(true); throw error }),
       storage.loadConfigOwner("server"),
       storage.loadStateOwner("ui"),
@@ -704,7 +706,7 @@ async function patchConfigOwner(owner: string, patch: unknown) {
     if (owner === "ui" && error instanceof ConfigOwnerReconciliationPendingError) { setIsUiConfigLoaded(false); setUiConfigLoadFailed(true) }
     throw error
   }
-  if (owner === "ui") setUiConfigBucket(updated as any)
+  if (owner === "ui") { setUiConfigBucket(updated as any); setNativeHotkeysReady(true) }
   if (owner === "server") setServerConfigBucket(updated as any)
 }
 
@@ -742,6 +744,14 @@ function updatePreferences(updates: Partial<UiSettings>): Promise<boolean> {
       .then(() => true, () => false)
   }
   return updateUiSettings(updates)
+}
+
+// Preserve null deletion markers rather than passing resets through normalizers.
+export function patchHotkeyPreferences(patch: { settings: { hotkeyOverrides: Record<string, HotkeyBinding[] | null> | null } }): Promise<boolean> {
+  return patchConfigOwner("ui", patch).then(() => true, error => {
+    log.error("Failed to patch hotkey settings", error)
+    return false
+  })
 }
 
 // Serialize local library edits and resolve the array only after preferences load.
@@ -1264,10 +1274,6 @@ function toggleShowThinkingBlocks(): void {
   updateUiSettings({ showThinkingBlocks: !preferences().showThinkingBlocks })
 }
 
-function toggleKeyboardShortcutHints(): void {
-  updatePreferences({ showKeyboardShortcutHints: !preferences().showKeyboardShortcutHints })
-}
-
 function toggleShowTimelineTools(): void {
   updateUiSettings({ showTimelineTools: !preferences().showTimelineTools })
 }
@@ -1278,10 +1284,6 @@ function toggleShowMessageTimeline(): void {
 
 function toggleUsageMetrics(): void {
   updateUiSettings({ showUsageMetrics: !preferences().showUsageMetrics })
-}
-
-function togglePromptSubmitOnEnter(): void {
-  updateUiSettings({ promptSubmitOnEnter: !preferences().promptSubmitOnEnter })
 }
 
 function toggleShowPromptVoiceInput(): void {
@@ -1388,12 +1390,10 @@ interface ConfigContextValue {
 
   // ui settings helpers
   toggleShowThinkingBlocks: typeof toggleShowThinkingBlocks
-  toggleKeyboardShortcutHints: typeof toggleKeyboardShortcutHints
   toggleShowMessageTimeline: typeof toggleShowMessageTimeline
   toggleShowTimelineTools: typeof toggleShowTimelineTools
   toggleUsageMetrics: typeof toggleUsageMetrics
   toggleAutoCleanupBlankSessions: typeof toggleAutoCleanupBlankSessions
-  togglePromptSubmitOnEnter: typeof togglePromptSubmitOnEnter
   toggleShowPromptVoiceInput: typeof toggleShowPromptVoiceInput
   setDiffViewMode: typeof setDiffViewMode
   setToolOutputExpansion: typeof setToolOutputExpansion
@@ -1471,12 +1471,10 @@ const configContextValue: ConfigContextValue = {
   getModelThinkingSelection,
   setModelThinkingSelection,
   toggleShowThinkingBlocks,
-  toggleKeyboardShortcutHints,
   toggleShowMessageTimeline,
   toggleShowTimelineTools,
   toggleUsageMetrics,
   toggleAutoCleanupBlankSessions,
-  togglePromptSubmitOnEnter,
   toggleShowPromptVoiceInput,
   setDiffViewMode,
   setToolOutputExpansion,
@@ -1488,6 +1486,7 @@ const configContextValue: ConfigContextValue = {
 }
 
 export const ConfigProvider: ParentComponent = (props) => {
+  useNativeHotkeySync(uiSettings, nativeHotkeysReady)
   onMount(() => {
     ensureLoaded().catch((error: unknown) => {
       log.error("Failed to initialize settings", error)
@@ -1495,6 +1494,7 @@ export const ConfigProvider: ParentComponent = (props) => {
 
     const unsubUi = storage.onConfigOwnerChanged("ui", (bucket) => {
       setUiConfigBucket(bucket as any)
+      setNativeHotkeysReady(true)
     })
     const unsubServer = storage.onConfigOwnerChanged("server", (bucket) => {
       setServerConfigBucket(bucket as any)
@@ -1573,11 +1573,9 @@ export {
   getModelThinkingSelection,
   setModelThinkingSelection,
   toggleShowThinkingBlocks,
-  toggleKeyboardShortcutHints,
   toggleShowTimelineTools,
   toggleUsageMetrics,
   toggleAutoCleanupBlankSessions,
-  togglePromptSubmitOnEnter,
   toggleShowPromptVoiceInput,
   setDiffViewMode,
   setToolOutputExpansion,

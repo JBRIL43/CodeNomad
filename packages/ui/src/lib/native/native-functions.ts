@@ -1,11 +1,17 @@
 import { canUseNativeDialogs, isElectronHost, isTauriHost } from "../runtime-env"
 import type { NativeDialogOptions } from "./types"
-import { openElectronNativeDialog } from "./electron/functions"
-import { openTauriNativeDialog } from "./tauri/functions"
+import { openElectronNativeDialog, setElectronNativeHotkeys } from "./electron/functions"
+import { openTauriNativeDialog, setTauriNativeHotkeys } from "./tauri/functions"
+import type { NativeHotkeySnapshot } from "./hotkeys-contract"
 
 export type { NativeDialogOptions, NativeDialogFilter, NativeDialogMode } from "./types"
 
 type NativeDialogResult = string | string[] | null
+
+export async function setNativeHotkeys(snapshot: NativeHotkeySnapshot): Promise<void> {
+  if (isElectronHost()) await setElectronNativeHotkeys(snapshot)
+  else if (isTauriHost()) await setTauriNativeHotkeys(snapshot)
+}
 
 function resolveNativeHandler(): ((options: NativeDialogOptions) => Promise<NativeDialogResult>) | null {
   if (isElectronHost()) {

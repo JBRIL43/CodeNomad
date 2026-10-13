@@ -5,7 +5,7 @@ app.setPath("userData", process.env.CODENOMAD_TEST_PROFILE)
 const native = require(process.env.CODENOMAD_TEST_ZOOM_MODULE)
 
 app.whenReady().then(async () => {
-  const windows = [], trackers = [], saved = []
+  const windows = [], trackers = [], saved = [], keyboardActions = []
   const create = (index, state) => {
     const frame = index === 1
     const minimum = native.zoomedWindowMinimum(state?.zoomFactor ?? 1)
@@ -25,6 +25,16 @@ app.whenReady().then(async () => {
     native.installWindowSizeConstraints(window, () => screen.getDisplayMatching(window.getBounds()).workArea, state?.zoomFactor ?? 1)
     native.restoreWindowState(window, state, bounds)
     native.installWindowZoomInput(window, level => trackers[index].setZoomLevel(level))
+    keyboardActions[index] = []
+    native.installNativeHotkeys(window, (owned, action) => {
+      keyboardActions[index].push(action)
+      native.executeNativeWindowAction(owned, action)
+    }, () => true, native.refreshNativeHotkeyMenu, !frame)
+    const configure = () => native.setNativeHotkeys(window, native.makeNativeHotkeySnapshot({}, true, {
+      host: "electron", mac: process.platform === "darwin", linux: process.platform === "linux",
+      windowContext: frame ? "remote" : "local",
+    }, false))
+    window.webContents.on("did-finish-load", configure)
     return window
   }
   create(0)
@@ -33,6 +43,7 @@ app.whenReady().then(async () => {
   native.createApplicationMenu({ getLocalTarget: () => target, getWindowTarget: () => target,
     newWindow() {}, reload() {}, forceReload() {} })
   global.zoomFixture = {
+    keyboardActions(index) { return keyboardActions[index] },
     zoom(index, factor) { native.setWindowZoomLevel(windows[index], Math.log(factor) / Math.log(1.2)) },
     rawZoom(index, factor) { windows[index].webContents.setZoomFactor(factor) },
     fit(index, cssWidth = 390) {

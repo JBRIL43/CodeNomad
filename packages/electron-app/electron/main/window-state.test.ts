@@ -240,10 +240,10 @@ test("Electron keyboard and wheel zoom input is applied explicitly", () => {
   events.get("before-input-event")?.({ preventDefault: () => prevented.push("keyboard") }, {
     type: "keyDown", control: true, meta: false, alt: false, key: "=",
   })
-  assert.equal(zoomLevel, 0.5)
+  assert.equal(zoomLevel, 0, "keyboard zoom has only the validated native-hotkey route")
   events.get("zoom-changed")?.({ preventDefault: () => prevented.push("wheel") }, "out")
-  assert.equal(zoomLevel, 0)
-  assert.deepEqual(prevented, ["keyboard", "wheel"])
+  assert.equal(zoomLevel, -0.5)
+  assert.deepEqual(prevented, ["wheel"])
 })
 
 test("native menu zoom survives cross-origin navigation", () => {

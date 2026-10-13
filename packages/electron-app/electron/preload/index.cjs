@@ -34,6 +34,7 @@ const localElectronAPI = {
   getDirectoryPaths: (paths) => ipcRenderer.invoke("filesystem:getDirectoryPaths", paths),
   openWorkspaceTarget: (payload) => ipcRenderer.invoke("workspace:openTarget", payload),
   setWorkspaceMenuEnabled: (enabled, viewState) => ipcRenderer.invoke("workspace:setMenuEnabled", Boolean(enabled), viewState),
+  setNativeHotkeys: (snapshot) => ipcRenderer.invoke("native-hotkeys:set", snapshot),
   newWindow: () => ipcRenderer.invoke("window:new"),
   nextPendingFolder: () => ipcRenderer.invoke("window:nextFolder"),
   acknowledgePendingFolder: (folder, opened) => ipcRenderer.invoke("window:ackFolder", folder, Boolean(opened)),
@@ -88,6 +89,7 @@ const localElectronAPI = {
 }
 
 const remoteElectronAPI = {
+  setNativeHotkeys: localElectronAPI.setNativeHotkeys,
   requestMicrophoneAccess: localElectronAPI.requestMicrophoneAccess,
   setWakeLock: localElectronAPI.setWakeLock,
   showNotification: localElectronAPI.showNotification,
@@ -95,6 +97,7 @@ const remoteElectronAPI = {
 }
 
 const preferencesElectronAPI = {
+  setNativeHotkeys: localElectronAPI.setNativeHotkeys,
   onCliStatus: localElectronAPI.onCliStatus,
   onCliError: localElectronAPI.onCliError,
   getCliStatus: localElectronAPI.getCliStatus,

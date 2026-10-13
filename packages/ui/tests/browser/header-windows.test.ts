@@ -100,7 +100,7 @@ test("native Electron zoom preserves CSS minimums across close/recreate, shared 
   try {
     const module = join(sandbox, "zoom.cjs")
     const root = fileURLToPath(new URL("../../../electron-app/electron/main/", import.meta.url)).replaceAll("\\", "/")
-    await build({ stdin: { contents: `export * from "${root}window-state.ts"; export * from "${root}menu.ts";`, resolveDir: root },
+    await build({ stdin: { contents: `export * from "${root}window-state.ts"; export * from "${root}menu.ts"; export * from "${root}native-hotkeys.ts"; export { makeNativeHotkeySnapshot } from "${root}../../../ui/src/lib/native/hotkeys-contract.ts";`, resolveDir: root },
       outfile: module, bundle: true, platform: "node", format: "cjs", external: ["electron"] })
     const env = { ...process.env, CODENOMAD_TEST_PROFILE: join(sandbox, "profile"), CODENOMAD_TEST_ZOOM_MODULE: module, CODENOMAD_TEST_ZOOM_URL: url }
     delete env.ELECTRON_RUN_AS_NODE
@@ -137,6 +137,7 @@ test("native Electron zoom preserves CSS minimums across close/recreate, shared 
     await page.bringToFront()
     await app.evaluate(() => (globalThis as any).zoomFixture.input(0, "-"))
     assert.equal((await app.evaluate(() => (globalThis as any).zoomFixture.snapshot(0))).zoom, 1)
+    assert.deepEqual(await app.evaluate(() => (globalThis as any).zoomFixture.keyboardActions(0)), ["window-zoom-out"], "the configured native dispatcher executes keyboard zoom once")
     await app.evaluate(() => (globalThis as any).zoomFixture.zoom(0, 0.8))
     await app.evaluate(() => (globalThis as any).zoomFixture.fit(0))
     const saved = await app.evaluate(() => (globalThis as any).zoomFixture.save())
@@ -804,6 +805,46 @@ for (const kind of ["command-palette", "session-search"]) test(`${kind} stays op
   } catch (error) {
     console.error({ errors, body: await page.locator("body").innerText() })
     throw error
+  } finally { await page.close() }
+})
+
+test("composer tooltips follow effective bindings without permanent key strips", async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } })
+  await page.route("**/api/**", route => route.fulfill({ json: {} }))
+  try {
+    await page.goto(url)
+    await page.waitForFunction(() => Boolean((window as any).fixture))
+    const composer = page.locator("textarea.prompt-input:visible")
+    const send = page.locator(".send-button:visible"), stop = page.locator(".stop-button:visible")
+    const sendName = await send.getAttribute("aria-label"), stopName = await stop.getAttribute("aria-label")
+    assert.equal(await page.locator(".prompt-input-overlay, .keyboard-hints, .kbd-hint").count(), 0)
+    assert.equal(await composer.getAttribute("aria-describedby"), null)
+    await page.evaluate(() => (window as any).fixture.setPreferences({ hotkeyOverrides: {
+      "prompt-send": [{ key: "j", mod: true }], "session-abort": [{ key: "e", mod: true }],
+      "session-search": [{ key: "g", mod: true }],
+    } }))
+    assert.equal(await send.getAttribute("title"), `${sendName} (Ctrl+J)`)
+    assert.equal(await stop.getAttribute("title"), `${stopName} (Ctrl+E)`)
+    assert.equal(await send.getAttribute("aria-label"), sendName)
+    assert.equal(await stop.getAttribute("aria-label"), stopName)
+    await page.keyboard.press("Control+f")
+    assert.equal(await page.getByRole("searchbox").count(), 0)
+    await page.keyboard.press("Control+g")
+    await page.getByRole("searchbox").waitFor()
+    await page.getByRole("button", { name: "Close search", exact: true }).click()
+    await page.evaluate(() => (window as any).fixture.setPreferences({ hotkeyOverrides: {
+      "prompt-send": [], "session-abort": [{ key: "e", mod: true }], "session-search": [{ key: "g", mod: true }],
+    } }))
+    assert.equal(await send.getAttribute("title"), sendName, "disabled bindings leave no empty tooltip suffix")
+    await page.evaluate(() => (window as any).fixture.setWorking())
+    await composer.fill("A draft survives the first abort key")
+    await composer.press("Control+e")
+    const reminder = page.locator(".prompt-input-overlay:visible")
+    await reminder.waitFor()
+    assert.equal(await reminder.innerText(), "Press again to stop", "transient confirmation must not display a key combination")
+    assert.equal(await reminder.locator("kbd").count(), 0)
+    assert.equal(await composer.getAttribute("aria-describedby"), await reminder.getAttribute("id"))
+    assert.equal(await composer.inputValue(), "A draft survives the first abort key")
   } finally { await page.close() }
 })
 

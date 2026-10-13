@@ -15,6 +15,7 @@ const CONTEXT_SCRIPT: &str = "window.__CODENOMAD_RUNTIME_HOST__ = 'tauri'; windo
 const SECTIONS: &[&str] = &[
     "general",
     "chat",
+    "hotkeys",
     "notifications",
     "speech",
     "remote",
@@ -345,7 +346,7 @@ fn open_preferences(
     } else {
         builder
     };
-    let preferences_window = crate::window_zoom::configure(builder)
+    let preferences_window = crate::native_hotkeys::configure(crate::window_zoom::configure(builder))
         .title("Preferences")
         .inner_size(1100.0, 760.0)
         .min_inner_size(760.0, 560.0)

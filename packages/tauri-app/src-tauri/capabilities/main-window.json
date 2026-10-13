@@ -10,6 +10,9 @@
     "core:default",
     "core:menu:default",
     "allow-window-control",
+    "allow-set-native-hotkeys",
+    "allow-native-hotkey-action",
+    "allow-native-hotkeys-ready",
     "allow-popup-titlebar-menu",
     "dialog:allow-open",
     {
