@@ -116,6 +116,7 @@ export function useAppLifecycle(options: UseAppLifecycleOptions) {
       },
       () => hideCommandPalette(),
       hasActiveSession,
+      { isOpen: options.showFolderSelection, close: () => options.setShowFolderSelection(false) },
     )
 
     const handleKeyDown = (e: KeyboardEvent) => {
