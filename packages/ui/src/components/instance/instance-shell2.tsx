@@ -47,6 +47,8 @@ import { useSessionSidebarRequests } from "./shell/useSessionSidebarRequests"
 import RightPanel from "./shell/right-panel/RightPanel"
 import { registerViewMenuPanels } from "../../lib/native/view-menu"
 import { useDrawerChrome } from "./shell/useDrawerChrome"
+import ShellPanelToggle from "./shell/ShellPanelToggle"
+import { useSessionNavigationHistory } from "./shell/useSessionNavigationHistory"
 import { getRetrySeconds, getSessionIdleFadeClass, getSessionRetry, getSessionStatus, shouldShowSessionStatus } from "../../stores/session-status"
 import { Command as CommandIcon, Globe, ListFilter, Maximize2, Search, ShieldAlert } from "lucide-solid"
 import type { PromptInputApi } from "../prompt-input/types"
@@ -219,24 +221,21 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
     setLeftOpen,
     setRightOpen,
     leftDrawerState,
-    rightDrawerState,
     closeLeft: closeLeftDrawer,
     closeRight: closeRightDrawer,
     closeFloatingDrawersIfAny,
-    leftAppBarButtonLabel,
-    rightAppBarButtonLabel,
-    leftAppBarButtonIcon,
-    rightAppBarButtonIcon,
-    handleLeftAppBarButtonClick,
-    handleRightAppBarButtonClick,
+    toggleLeft,
+    toggleRight,
   } = drawerChrome
+  const leftPanelId = () => `session-sidebar-${props.instance.id}`
+  const rightPanelId = () => `session-right-panel-${props.instance.id}`
 
   registerViewMenuPanels(props.instance.id, {
     enabled: () => !mobileFullscreen(),
     leftOpen,
     rightOpen,
-    toggleLeft: () => leftOpen() ? closeLeftDrawer() : handleLeftAppBarButtonClick(),
-    toggleRight: () => rightOpen() ? closeRightDrawer() : handleRightAppBarButtonClick(),
+    toggleLeft,
+    toggleRight,
   })
 
   // When the user switches away from this instance (e.g., taps a different
@@ -263,6 +262,8 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
 
       const target = event.target
       if (!(target instanceof Node)) return
+      // The fixed toggles sit above floating drawers and handle their own clicks.
+      if (leftToggleButtonEl()?.contains(target) || rightToggleButtonEl()?.contains(target)) return
 
       const leftContent = leftDrawerContentEl()
       const rightContent = rightDrawerContentEl()
@@ -703,6 +704,12 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
     isActiveInstance: () => Boolean(props.isActiveInstance),
   })
 
+  const sessionHistory = useSessionNavigationHistory({
+    activeSessionId: activeSessionIdForInstance,
+    isAvailable: (sessionId) => allInstanceSessions().has(sessionId),
+    select: handleSessionSelect,
+  })
+
   // Keep only explicitly opened browser shells; inactive transcripts/composers
   // still unmount and remain subject to the existing transcript memory budget.
   const mountedSessionIds = createMemo<string[]>((previous) => {
@@ -777,7 +784,8 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
             drawerState={leftDrawerState}
             onSelectSession={handleSidebarSessionSelect}
             onNewSession={props.onNewSession}
-            onCloseLeftDrawer={closeLeftDrawer}
+            panelId={leftPanelId()}
+            history={sessionHistory}
             setContentEl={setLeftDrawerContentEl}
           />
         </Box>
@@ -802,7 +810,8 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
           drawerState={leftDrawerState}
           onSelectSession={handleSidebarSessionSelect}
           onNewSession={props.onNewSession}
-          onCloseLeftDrawer={closeLeftDrawer}
+          panelId={leftPanelId()}
+          history={sessionHistory}
           setContentEl={setLeftDrawerContentEl}
         />
       </HostedDrawer>
@@ -844,6 +853,7 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
             rightDrawerWidth={rightPanelWidth}
             rightDrawerWidthInitialized={rightDrawerWidthInitialized}
             onCloseRightDrawer={closeRightDrawer}
+            panelId={rightPanelId()}
             promptInputApi={activePromptInputApi}
             setContentEl={setRightDrawerContentEl}
           />
@@ -870,6 +880,7 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
           rightDrawerWidth={drawerHostWidth}
           rightDrawerWidthInitialized={rightDrawerWidthInitialized}
           onCloseRightDrawer={closeRightDrawer}
+          panelId={rightPanelId()}
           promptInputApi={activePromptInputApi}
           setContentEl={setRightDrawerContentEl}
         />
@@ -886,7 +897,6 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
     const title = activeSessionForInstance()?.title?.trim()
     return title || t("sessionList.session.untitled")
   })
-  const showHeaderLeftSlot = createMemo(() => !leftPinned())
   const showHeaderSessionTitle = createMemo(() => !leftOpen() && Boolean(activeSessionTitle()))
 
   const renderActiveSessionHeaderTitle = () => (
@@ -897,23 +907,6 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
         title={activeSessionTitle() ?? undefined}
       >
         {activeSessionTitle()}
-      </span>
-    </Show>
-  )
-
-  const renderHeaderLeftSlot = () => (
-    <Show when={showHeaderLeftSlot() && leftDrawerState() === "floating-closed"}>
-      <span class="panel-header-actions session-header-drawer-toggle session-header-drawer-toggle--left">
-        <IconButton
-          ref={setLeftToggleButtonEl}
-          color="inherit"
-          onClick={handleLeftAppBarButtonClick}
-          aria-label={leftAppBarButtonLabel()}
-          size="small"
-          aria-expanded={leftDrawerState() !== "floating-closed"}
-        >
-          {leftAppBarButtonIcon()}
-        </IconButton>
       </span>
     </Show>
   )
@@ -1073,13 +1066,13 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
         data-session-center-width={sessionCenterWidthStep()}
         data-session-header-density={String(headerDensity())}
         data-session-header-actions-forced={narrowHeaderActions() ? "true" : "false"}
+        data-left-toggle-reserve={leftPinned() ? undefined : "true"}
+        data-right-toggle-reserve={rightPinned() ? undefined : "true"}
         sx={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, overflowX: "hidden" }}
       >
         <Show when={!mobileFullscreen()}>
           <AppBar position="sticky" color="default" elevation={0} sx={{ borderBottom: 0 }}>
             <Toolbar ref={(element) => { sessionToolbarEl = element }} variant="dense" class="panel-header session-toolbar flex items-center gap-2 py-0">
-              {renderHeaderLeftSlot()}
-
               <div ref={(element) => { headerLeftEl = element }} class="session-toolbar-left flex-1 flex items-center gap-3 min-w-0">
                 <Show when={!showingInfoView()}>
                   <ContextMeter
@@ -1164,21 +1157,6 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
                   </div>
                 </div>
               </div>
-
-              <Show when={rightDrawerState() === "floating-closed"}>
-                <span class="panel-header-actions session-header-drawer-toggle session-header-drawer-toggle--right">
-                  <IconButton
-                    ref={setRightToggleButtonEl}
-                    color="inherit"
-                    onClick={handleRightAppBarButtonClick}
-                    aria-label={rightAppBarButtonLabel()}
-                    size="small"
-                    aria-expanded={rightDrawerState() !== "floating-closed"}
-                  >
-                    {rightAppBarButtonIcon()}
-                  </IconButton>
-                </span>
-              </Show>
             </Toolbar>
           </AppBar>
         </Show>
@@ -1323,7 +1301,16 @@ const InstanceShell2: Component<InstanceShellProps> = (props) => {
         data-instance-id={props.instance.id}
       >
         <Show when={!isLaunching()} fallback={<InstanceWelcomeView instance={props.instance} />}>
-          {sessionLayout}
+          {/* Outside the drawer host: modal sibling isolation never hides the toggles. */}
+          <div class="session-shell-frame">
+            <Show when={!mobileFullscreen()}>
+              <ShellPanelToggle side="left" expanded={leftOpen()} label={t("window.menu.leftPanel")} controls={leftPanelId()}
+                onToggle={toggleLeft} ref={setLeftToggleButtonEl} />
+              <ShellPanelToggle side="right" expanded={rightOpen()} label={t("window.menu.rightPanel")} controls={rightPanelId()}
+                onToggle={toggleRight} ref={setRightToggleButtonEl} />
+            </Show>
+            {sessionLayout}
+          </div>
         </Show>
       </div>
 
