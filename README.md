@@ -10,6 +10,8 @@ CodeNomad is a **desktop and browser workspace for OpenCode V2** — built for d
 
 *The 0.20 interface, rendered with demonstration data. [Download the latest stable release](https://github.com/NeuralNomadsAI/CodeNomad/releases/latest).*
 
+[User help](https://neuralnomadsai.github.io/CodeNomad/) · [Read the English guide on GitHub](docs/help/en/index.md) — multilingual help for current CodeNomad and OpenCode V2.
+
 ---
 
 ## Features

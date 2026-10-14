@@ -24,7 +24,9 @@
     "build:binaries": "npm run build:binaries --workspace @neuralnomads/codenomad-electron-app",
     "typecheck": "npm run typecheck --workspace @codenomad/remote-tunnel && npm run typecheck --workspace @codenomad/ui && npm run typecheck --workspace @neuralnomads/codenomad-electron-app",
     "bumpVersion": "node ./scripts/bump-version.js",
-    "check:runtime": "node .github/scripts/runtime-maintenance.cjs"
+    "check:runtime": "node .github/scripts/runtime-maintenance.cjs",
+    "build:help": "node scripts/build-help.mjs",
+    "test:help": "node scripts/test-help.mjs"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",
