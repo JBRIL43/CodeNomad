@@ -7,7 +7,10 @@ import { canOpenRemoteWindows, runtimeEnv } from "../../lib/runtime-env"
 import { openSettings } from "../../stores/settings-screen"
 import { setUpdateFeed } from "../../stores/preferences"
 import type { UpdateFeed } from "../../../../server/src/api-types"
-import { buildDiagnosticReport, getDiagnosticAddresses, getDiagnosticListeningMode, getServerOperatingSystem } from "./info-settings-diagnostics"
+import { openExternalUrl } from "../../lib/external-url"
+import { buildBugReportUrl, currentBugReportTemplateStatus, readBugReportTemplateStatus } from "../../lib/bug-report"
+import { openCodeSetupStatus, refreshOpenCodeSetup } from "../../stores/opencode-setup"
+import { buildBugReportEnvironment, buildDiagnosticReport, getDiagnosticAddresses, getDiagnosticListeningMode, getServerOperatingSystem } from "./info-settings-diagnostics"
 
 interface UserAgentData {
   platform?: string
@@ -224,6 +227,17 @@ export const InfoSettingsSection: Component = () => {
     const ok = await copyToClipboard(report)
     if (ok) setCopyFeedback("success")
     else setCopyFeedback("error")
+  }
+
+  // Warm both reads: the click opens GitHub at once, within the browser's user activation.
+  void readBugReportTemplateStatus()
+  if (!openCodeSetupStatus()) void refreshOpenCodeSetup()
+  const handleReportBug = () => {
+    const opencode = openCodeSetupStatus()
+    const environment = buildBugReportEnvironment(meta() ?? null, osDisplay(), runtimeEnv, {
+      opencodeInstalled: opencode?.currentVersion, opencodeDaemon: opencode?.daemonVersion, userAgent: navigator.userAgent,
+    })
+    void openExternalUrl(buildBugReportUrl(environment, currentBugReportTemplateStatus()), "bug-report")
   }
 
   const handleDownload = () => {
@@ -464,6 +478,13 @@ export const InfoSettingsSection: Component = () => {
             onClick={handleDownload}
           >
             {t("settings.info.diagnostics.download")}
+          </button>
+          <button
+            type="button"
+            class="settings-pill-button"
+            onClick={handleReportBug}
+          >
+            {t("settings.info.diagnostics.reportBug")}
           </button>
         </div>
 
