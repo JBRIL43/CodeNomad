@@ -60,6 +60,7 @@
   },
   "build": {
     "appId": "ai.neuralnomads.codenomad.client",
+    "publish": null,
     "productName": "CodeNomad",
     "directories": {
       "output": "release",
@@ -132,12 +133,32 @@
       "executableName": "CodeNomad",
       "target": [
         {
-          "target": "tar.gz"
+          "target": "deb"
         }
       ],
       "artifactName": "CodeNomad-Electron-linux-${arch}-${version}.${ext}",
       "category": "Development",
       "icon": "electron/resources/icon.png"
+    },
+    "deb": {
+      "packageName": "codenomad",
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1",
+        "libasound2t64 | libasound2"
+      ],
+      "fpm": [
+        "--conflicts=code-nomad",
+        "--replaces=code-nomad"
+      ]
     }
   },
   "private": true
