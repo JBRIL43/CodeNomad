@@ -787,6 +787,27 @@ test("central diff inserts local lines and revision-qualified history into the r
     await modifiedLine.click()
     await page.keyboard.press("Home")
     await page.keyboard.press("Shift+End")
+    // Git status reconciliation reopens a fresh, identical target to reload the
+    // file; the reader must keep its editor, selection and insert action.
+    const editor = (await page.locator(".git-diff-view .monaco-diff-editor").elementHandle())!
+    const diffReads = () => page.evaluate(() => (window as any).fixture.calls.filter((call: any) => call.kind === "local-diff").length)
+    const readsBefore = await diffReads()
+    const monacoPath = "/src/lib/monaco/setup.ts"
+    // A new diff view model would re-collapse regions the reader expanded.
+    await page.evaluate(async path => { (window as any).diffModelBeforeReopen = (await (await import(path)).loadMonaco()).editor.getDiffEditors()
+      .map((candidate: any) => candidate.getModel()) }, monacoPath)
+    await page.evaluate(async () => {
+      const storePath = "/src/stores/files-preview.ts"
+      const { getFilePreview, openFilePreview } = await import(storePath)
+      openFilePreview("git-prototype", { ...getFilePreview("git-prototype") })
+    })
+    await page.waitForFunction(count => (window as any).fixture.calls.filter((call: any) => call.kind === "local-diff").length > count, readsBefore)
+    assert.equal(await editor.evaluate(element => element.isConnected), true, "a refreshed identical target reloads in place")
+    assert.equal(await page.evaluate(async path => {
+      const current = (await (await import(path)).loadMonaco()).editor.getDiffEditors().map((candidate: any) => candidate.getModel())
+      const before = (window as any).diffModelBeforeReopen as unknown[]
+      return current.length === before.length && current.every((model: unknown, index: number) => model === before[index])
+    }, monacoPath), true, "a reload of the shown file keeps the diff view model and its expanded regions")
     const insert = page.getByRole("button", { name: "Ajouter au prompt", exact: true })
     await insert.click()
     assert.match(await composer.inputValue(), /Conserver ce brouillon/)
@@ -865,6 +886,73 @@ test("central diff inserts local lines and revision-qualified history into the r
     }
     await page.close()
   }
+})
+
+test("a reloaded diff keeps its collapsed regions and keeps its view model only for identical text", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } })
+  const errors: string[] = []
+  page.on("pageerror", error => errors.push(error.stack ?? error.message))
+  await page.route("**/api/**", route => route.fulfill({ json: {} }))
+  try {
+    await page.goto(`${url}?session=1`)
+    // The fixture installs its own diff reader while loading; replace it afterwards.
+    await page.waitForFunction(() => Boolean((window as any).fixture))
+    // A long file collapses its unchanged regions in the default context mode.
+    await page.evaluate(async () => {
+      const apiPath = "/src/lib/api-client.ts"
+      const { serverApi } = await import(apiPath)
+      const w = window as any
+      // Property assignments only: tsx wraps named functions in a page-absent __name.
+      // A BOM is one of the inputs Monaco's getValue() does not round-trip.
+      w.setLongDiff = (changed: number[]) => {
+        w.longDiff = {
+          before: "﻿" + Array.from({ length: 200 }, (_, line) => `line ${line}`).join("\n") + "\n",
+          after: "﻿" + Array.from({ length: 200 }, (_, line) => changed.includes(line) ? `changed ${line}` : `line ${line}`).join("\n") + "\n",
+        }
+      }
+      w.setLongDiff([100])
+      const read = serverApi.fetchWorktreeGitDiff
+      serverApi.fetchWorktreeGitDiff = async (...args: any[]) => ({ ...(await read(...args)), ...w.longDiff })
+    })
+    await page.getByRole("button", { name: /Changements/ }).click()
+    await page.getByRole("button", { name: "Aperçu du fichier · src/components/git-panel.tsx", exact: true }).click()
+    // Monaco 0.52 draws each collapsed unchanged region as a sized widget.
+    const hidden = page.locator(".git-diff-view .diff-hidden-lines-widget")
+    await hidden.first().waitFor()
+
+    const monacoPath = "/src/lib/monaco/setup.ts"
+    const captureModels = () => page.evaluate(async path => {
+      (window as any).capturedDiffModels = (await (await import(path)).loadMonaco()).editor.getDiffEditors().map((editor: any) => editor.getModel())
+    }, monacoPath)
+    const sameModels = () => page.evaluate(async path => {
+      const current = (await (await import(path)).loadMonaco()).editor.getDiffEditors().map((editor: any) => editor.getModel())
+      const captured = (window as any).capturedDiffModels as unknown[]
+      return current.length === captured.length && current.every((model: unknown, index: number) => model === captured[index])
+    }, monacoPath)
+    const reopen = async () => {
+      const reads = await page.evaluate(() => (window as any).fixture.calls.filter((call: any) => call.kind === "local-diff").length)
+      await page.evaluate(async () => {
+        const storePath = "/src/stores/files-preview.ts"
+        const { getFilePreview, openFilePreview } = await import(storePath)
+        openFilePreview("git-prototype", { ...getFilePreview("git-prototype") })
+      })
+      await page.waitForFunction(count => (window as any).fixture.calls.filter((call: any) => call.kind === "local-diff").length > count, reads)
+    }
+
+    await captureModels()
+    await reopen()
+    assert.equal(await sameModels(), true, "identical text keeps the view model and the reader's expanded regions")
+    assert.ok(await hidden.count() > 0, "identical text keeps unchanged regions collapsed")
+
+    await page.evaluate(() => (window as any).setLongDiff([100, 150]))
+    await captureModels()
+    await reopen()
+    await page.locator(".git-diff-view .editor.modified .view-line", { hasText: "changed 150" }).waitFor()
+    assert.equal(await sameModels(), false, "changed text gets a fresh view model")
+    await hidden.first().waitFor()
+    assert.ok(await hidden.count() > 0, "changed text keeps unchanged regions collapsed")
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
 })
 
 test("Workspace keyboard focus survives lazy expansion and refresh, including RTL", async () => {
