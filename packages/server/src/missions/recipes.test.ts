@@ -41,7 +41,7 @@ test("coordinator preserves explicit native reuse and additive frontier planning
 
 test("optional working notes stay verbatim in the map and are quoted as untrusted actor context for every playbook", () => {
   const notes = "  Optional <working notes> & technical context\n  "
-  for (const template of ["custom", "debug", "wayfinder"] as const) {
+  for (const template of ["custom", "debug", "wayfinder", "delivery"] as const) {
     const map = { ...mission, template, notes }
     const context = buildActorContext(map, "ses_coordinator")
     assert.ok(context.includes("<mission-notes>  Optional &lt;working notes&gt; &amp; technical context\n  </mission-notes>"))
@@ -50,7 +50,7 @@ test("optional working notes stay verbatim in the map and are quoted as untruste
 })
 
 test("every coordinator plans all requested workstreams and launches independent work before waiting", () => {
-  for (const template of ["custom", "debug", "wayfinder"] satisfies MissionTemplateId[]) {
+  for (const template of ["custom", "debug", "wayfinder", "delivery"] satisfies MissionTemplateId[]) {
     const context = buildActorContext({ ...mission, template }, "ses_coordinator")
     assert.match(context, /Cover every explicitly requested workstream/)
     assert.match(context, /Before waiting for one result, launch the other independent ready tasks/)
@@ -64,7 +64,7 @@ test("every coordinator plans all requested workstreams and launches independent
 })
 
 test("every coordinator writes plain-language summaries and publishes automatic briefings", () => {
-  for (const template of ["custom", "debug", "wayfinder"] satisfies MissionTemplateId[]) {
+  for (const template of ["custom", "debug", "wayfinder", "delivery"] satisfies MissionTemplateId[]) {
     for (const taskMode of ["native", "independent"] as const) {
       const context = buildActorContext({ ...mission, template, taskMode }, "ses_coordinator")
       assert.ok(context.includes(USER_FACING_TEXT) && context.includes(AUTOMATIC_BRIEFINGS))
@@ -100,6 +100,39 @@ test("Wayfinder guidance cannot claim a human-proof gate without authoritative n
   assert.equal(recipe.roles.some(role => role.reportContract), false)
 })
 
+test("Product delivery keeps the NomadWorks gates without granting commits or human answers", () => {
+  const recipe = getMissionRecipe("delivery")
+  assert.match(recipe.coordinator, /never implement it yourself/)
+  assert.match(recipe.coordinator, /Classify every request by complexity and track before declaring tasks/)
+  assert.match(recipe.coordinator, /required for any change to product behavior or shared specifications \(tiny included\)/)
+  assert.match(recipe.coordinator, /optional only for tiny non-behavioral implementation and for investigation/)
+  assert.match(recipe.coordinator, /approval through a native Form and never answer for the human/)
+  assert.match(recipe.coordinator, /read-only tasks whose brief says no edits/)
+  assert.match(recipe.coordinator, /plus business-analyst when behavior, copy intent or requirements are affected/)
+  assert.match(recipe.coordinator, /at most one implementation task editing the shared checkout at a time/)
+  assert.match(recipe.coordinator, /every relevant check passes.*documentation impact is resolved/)
+  assert.match(recipe.coordinator, /Never stage, commit, push/)
+  assert.doesNotMatch(recipe.coordinator, /Reopen/)
+  assert.match(recipe.coordinator, /retire the task and add its replacement through mission\.revise \(replacesTaskKey\)/)
+  assert.match(recipe.coordinator, /keep its finished task and declare a follow-up whose reuseFromTaskKey names that live task/)
+  const independent = getMissionRecipe("delivery", "independent").coordinator
+  assert.match(independent, /persisted user-selected taskMode is independent/)
+  assert.doesNotMatch(independent, /Prefer ordinary native delegation/)
+  assert.match(independent, /Never stage, commit, push/)
+  assert.match(recipe.sequence.join("\n"), /the human owns commits/)
+  assert.deepEqual(recipe.roles.map(role => role.id), ["business-analyst", "technical-architect", "tech-lead", "developer", "qa-engineer", "ui-ux-designer"])
+  for (const role of recipe.roles) {
+    assert.match(role.instructions, /pre-sync readiness review, do not edit files/, role.id)
+    assert.match(role.instructions, /Acceptance criteria coverage.*Documentation impact.*Recommended next step/, role.id)
+    assert.match(role.instructions, /Never stage, commit, push/, role.id)
+    assert.equal(role.reportContract, undefined, role.id)
+  }
+  const role = (id: string) => recipe.roles.find(candidate => candidate.id === id)!.instructions
+  assert.match(role("qa-engineer"), /skipped or disabled tests never count as passing/)
+  assert.match(role("ui-ux-designer"), /Before delivery, give design input/)
+  assert.match(role("developer"), /instead of silently expanding scope/)
+})
+
 function assertNativeWorkPolicy(text: string) {
   assert.match(text, /Each native child owns its bounded assignment and may recursively decompose it/)
   assert.match(text, /Run independent subtasks in parallel when useful/)
@@ -116,7 +149,7 @@ function assertNativeWorkPolicy(text: string) {
   assert.doesNotMatch(text, /subagent_depth|depth\s*[:=]\s*\d|reach (?:depth|level) \d/)
 }
 
-for (const template of ["custom", "debug", "wayfinder"] satisfies MissionTemplateId[]) {
+for (const template of ["custom", "debug", "wayfinder", "delivery"] satisfies MissionTemplateId[]) {
   test(`${template} propagates bounded native policy while retaining every role's constraints`, () => {
     const map = { ...mission, template }
     const recipe = getMissionRecipe(template)
