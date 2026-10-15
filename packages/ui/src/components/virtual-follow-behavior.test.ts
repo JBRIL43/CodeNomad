@@ -9,11 +9,12 @@ import {
   BOTTOM_FOLLOW_EPSILON_PX,
   canScrollInDirection,
   classifyVirtualItemKeyChange,
+  describeKeyTarget,
   getKeyboardScrollIntent,
   getBottomAnchoredViewportOffset,
   getPrimaryPointerDragDirection,
+  SCROLL_EDGE_TOLERANCE_PX,
   ScrollRestoreTokenGuard,
-  shouldAdvanceBottomPin,
   shouldNavigateAtBoundary,
   VirtualScrollController,
   hasReachedBottom,
@@ -53,13 +54,62 @@ describe("virtual follow behavior", () => {
   })
 
   it("keeps page navigation available from non-editing interactive descendants", () => {
-    assert.deepEqual(getKeyboardScrollIntent({ key: "PageUp", shiftKey: false, interactive: true, textEditing: false }), {
-      type: "direction",
-      direction: "up",
-    })
-    assert.deepEqual(getKeyboardScrollIntent({ key: "Home", shiftKey: false, interactive: true, textEditing: false }), { type: "top" })
-    assert.equal(getKeyboardScrollIntent({ key: "PageUp", shiftKey: false, interactive: true, textEditing: true }), null)
-    assert.equal(getKeyboardScrollIntent({ key: " ", shiftKey: false, interactive: true, textEditing: false }), null)
+    const target = { interactive: false, textEditing: false, arrowWidget: false }
+    const key = (key: string, flags: Partial<typeof target>) => getKeyboardScrollIntent({ key, shiftKey: false, ...target, ...flags, viewportHeight: 614, zoom: 1, devicePixelRatio: 1 })
+    assert.deepEqual(key("PageUp", { interactive: true }), { type: "direction", direction: "up", distance: 537 })
+    assert.deepEqual(key("Home", { interactive: true }), { type: "top" })
+    assert.equal(key("PageUp", { interactive: true, textEditing: true }), null)
+    // A button activates on Space, but Chromium scrolls its scroller on arrows.
+    assert.equal(key(" ", { interactive: true }), null)
+    assert.deepEqual(key("ArrowUp", { interactive: true }), { type: "direction", direction: "up", distance: 40 })
+    // Widgets such as listboxes and sliders consume arrows and Space.
+    assert.equal(key("ArrowDown", { arrowWidget: true }), null)
+    assert.equal(key(" ", { arrowWidget: true }), null)
+    assert.deepEqual(key("PageDown", { arrowWidget: true }), { type: "direction", direction: "down", distance: 537 })
+  })
+
+  it("classifies Space-activated targets so Space on them carries no page amplitude", () => {
+    const target = (selectorMatch: (selector: string) => boolean) => ({ closest: (selector: string) => selectorMatch(selector) ? {} : null }) as unknown as EventTarget
+    const matches = (tag: string, role?: string) => (selector: string) => selector.split(", ").some(part => part === tag || (role !== undefined && part === `[role='${role}']`))
+    for (const [tag, role] of [["summary"], ["button"], ["a"], ["div", "checkbox"], ["div", "switch"], ["div", "radio"], ["div", "option"], ["div", "menuitem"], ["div", "menuitemcheckbox"], ["div", "menuitemradio"], ["div", "tab"], ["div", "treeitem"], ["span", "link"]] as const) {
+      const flags = describeKeyTarget(target(matches(tag, role)))
+      assert.equal(flags.interactive, true, `${tag}${role ? `[role=${role}]` : ""} is activated by Space`)
+      assert.equal(getKeyboardScrollIntent({ key: " ", shiftKey: false, ...flags, viewportHeight: 614, zoom: 1, devicePixelRatio: 1 }), null)
+    }
+    const plain = describeKeyTarget(target(matches("div")))
+    assert.deepEqual(plain, { textEditing: false, interactive: false, arrowWidget: false })
+    assert.deepEqual(getKeyboardScrollIntent({ key: " ", shiftKey: false, ...plain, viewportHeight: 614, zoom: 1, devicePixelRatio: 1 }), { type: "direction", direction: "down", distance: 537 })
+  })
+
+  it("never over-predicts Chromium's keyboard step as the gesture amplitude", () => {
+    const step = (key: string, zoom: number, devicePixelRatio = 1) => {
+      const intent = getKeyboardScrollIntent({ key, shiftKey: false, interactive: false, textEditing: false, arrowWidget: false, viewportHeight: 614, zoom, devicePixelRatio })
+      return intent?.type === "direction" ? intent.distance : undefined
+    }
+    // Measured: PageDown/Space 537px of a 614px viewport under CSS and native zoom.
+    assert.equal(step("PageDown", 1), 537)
+    assert.equal(step(" ", 1.25, 2), 537)
+    // A line is 40 DIP: 40/zoom under CSS zoom, 26.67 at native zoom 1.5, 20 at 2 (Electron).
+    assert.equal(step("ArrowDown", 1), 40)
+    assert.equal(step("ArrowDown", 1.25), 32)
+    assert.equal(step("ArrowDown", 1, 2), 20)
+    // Native zoom cannot be told from display scale: a 2x display under-predicts (40 real).
+    assert.ok(step("ArrowDown", 1, 1.5)! <= 40 / 1.5)
+    assert.equal(step("ArrowDown", 1, 0.5), 40, "Zooming out only lengthens the real step")
+  })
+
+  it("resumes follow from a downward gesture whose amplitude reaches the bottom laid out now", () => {
+    const reaches = new VirtualScrollController(false)
+    // 300px above the bottom; the landing is observed later, short of a grown bottom.
+    assert.deepEqual(reaches.userGesture("down", 700, metrics(2100), 300).state.mode, { type: "following" })
+
+    const short = new VirtualScrollController(false)
+    assert.deepEqual(short.userGesture("down", 700, metrics(2100), 268).state.mode, { type: "escaped" }, "Stopping 32px above the bottom stays manual")
+
+    const up = new VirtualScrollController(true)
+    assert.deepEqual(up.userGesture("up", 700, metrics(2400), 5000).state.mode, { type: "escaped" })
+    assert.deepEqual(new VirtualScrollController(false).userGesture("down", 700, null, 5000).state.mode, { type: "escaped" })
+    assert.deepEqual(new VirtualScrollController(false).userGesture(null, 700, metrics(2400)).state.mode, { type: "escaped" })
   })
 
   it("waits for Virtua measurements before applying a restored offset", () => {
@@ -218,9 +268,10 @@ describe("virtual follow behavior", () => {
   })
 
   it("never moves a bottom pin upward while measurements settle", () => {
-    assert.equal(shouldAdvanceBottomPin(2400, 2200), false)
-    assert.equal(shouldAdvanceBottomPin(2400, 2401), false)
-    assert.equal(shouldAdvanceBottomPin(2400, 2500), true)
+    const viewport = (scrollTop: number, maxOffset: number) => ({ scrollTop, scrollHeight: maxOffset + 600, clientHeight: 600 })
+    assert.equal(canScrollInDirection(viewport(2400, 2200), "down"), false)
+    assert.equal(canScrollInDirection(viewport(2400, 2401), "down"), false)
+    assert.equal(canScrollInDirection(viewport(2400, 2500), "down"), true)
   })
 
   it("restarts bottom settlement when Virtua discovers a later maximum", () => {
@@ -362,11 +413,18 @@ describe("virtual follow behavior", () => {
     assert.equal(isAtBottom(metrics(bottomOffset)), true)
   })
 
-  it("reaches the true bottom only within a sub-pixel rounding tolerance", () => {
+  it("reaches the true bottom only within the scroll-edge rounding tolerance", () => {
     assert.equal(hasReachedBottom(metrics(2400)), true)
-    assert.equal(hasReachedBottom(metrics(2399.5)), true)
-    assert.equal(hasReachedBottom(metrics(2399)), true)
-    assert.equal(hasReachedBottom(metrics(2398.9)), false)
+    assert.equal(hasReachedBottom(metrics(2400 - SCROLL_EDGE_TOLERANCE_PX)), true)
+    assert.equal(hasReachedBottom(metrics(2400 - SCROLL_EDGE_TOLERANCE_PX - 0.1)), false)
+    assert.ok(SCROLL_EDGE_TOLERANCE_PX < 32, "Stopping 32px above the bottom must remain manual reading")
+  })
+
+  it("counts viewports clamped at their bottom under fractional CSS zoom as at the true bottom", () => {
+    // Measured in Chromium after a wheel clamped at the bottom: CSS zoom 1.1 and 0.75.
+    assert.equal(hasReachedBottom(metrics(15102.7265625, 15718, 614)), true)
+    assert.equal(hasReachedBottom(metrics(15690.6669921875, 16317, 625)), true)
+    assert.equal(canScrollInDirection({ scrollTop: 15102.7265625, scrollHeight: 15718, clientHeight: 614 }, "down"), false)
   })
 
   it("applies the proximity tolerance only while following", () => {

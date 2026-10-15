@@ -45,8 +45,8 @@ async function frames(page: Page, count = 30) {
   await page.evaluate(`new Promise(resolve => { let count = ${count}; const next = () => --count ? requestAnimationFrame(next) : resolve(); requestAnimationFrame(next) })`)
 }
 
-async function open(run: (page: Page) => Promise<void>, { name = "session", history = 60, hasTouch = false }: { name?: FixtureName; history?: number; hasTouch?: boolean } = {}) {
-  const page = await browser.newPage({ viewport: { width: 1100, height: 700 }, locale: "en-US", hasTouch })
+async function open(run: (page: Page) => Promise<void>, { name = "session", history = 60, hasTouch = false, hold = false, deviceScaleFactor = 1, zoom = 1 }: { name?: FixtureName; history?: number; hasTouch?: boolean; hold?: boolean; deviceScaleFactor?: number; zoom?: number } = {}) {
+  const page = await browser.newPage({ viewport: { width: 1100, height: 700 }, locale: "en-US", hasTouch, deviceScaleFactor })
   const errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
   // tsx preserves callback names with this helper when Playwright serializes them.
@@ -69,7 +69,8 @@ async function open(run: (page: Page) => Promise<void>, { name = "session", hist
   try {
     await page.goto(`${url}?name=${name}`)
     await page.waitForFunction(() => Boolean((window as any).fixture))
-    await page.evaluate(`(async () => { const { applyUiSettings } = await import('/tests/browser/fixtures/ui-settings.ts'); await applyUiSettings({ holdLongAssistantReplies: false, locale: 'en' }) })()`)
+    if (zoom !== 1) await page.evaluate(zoom => { document.documentElement.style.zoom = String(zoom) }, zoom)
+    await page.evaluate(`(async () => { const { applyUiSettings } = await import('/tests/browser/fixtures/ui-settings.ts'); await applyUiSettings({ holdLongAssistantReplies: ${hold}, locale: 'en' }) })()`)
     if (name === "session" || name === "switch") {
       await page.evaluate(count => (window as any).fixture.seedHistory(count), history)
       await page.waitForFunction(last => document.querySelector(".message-stream")?.textContent?.includes(`History ${last}`), name === "switch" ? 59 : history - 1)
@@ -124,26 +125,43 @@ async function assertAnchorHeld(page: Page, samples: Array<{ time: number; ancho
   assert.ok(late.every((sample: any) => Math.abs(sample.anchorOffset - expected) < tolerance), `Post-layout restore cycle: expected=${expected}; ${JSON.stringify(late)}`)
 }
 
-for (const targetGap of [64, 32]) test(`manual reading ${targetGap}px from bottom does not resume follow`, async () => {
+// A gesture's predicted landing (its amplitude) must not overshoot the real
+// one: CSS zoom scales wheel pixels by 1/zoom, and a page key moves Chromium's
+// page step, so stopping above the bottom stays manual.
+for (const [gesture, targetGap, zoom] of [["wheel", 64, 1], ["wheel", 32, 1], ["wheel", 32, 1.25], ["PageDown", 32, 1]] as const) test(`manual reading ${targetGap}px from bottom does not resume follow (${gesture} zoom=${zoom})`, async () => {
   await open(async page => {
     await bottom(page)
-    await page.locator(".message-stream").hover()
-    await page.mouse.wheel(0, -80)
+    const stream = page.locator(".message-stream")
+    await stream.hover()
+    await page.mouse.wheel(0, -800)
     await frames(page, 45)
     assert.equal(await page.evaluate(() => (window as any).fixture.snapshot().scroll.followModeType), "escaped")
-    const gap = await page.locator(".message-stream").evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
-    await page.evaluate(() => { (window as any).scrollObservations = [] })
-    await page.mouse.wheel(0, gap - targetGap)
+    const gap = await stream.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
+    // Page pixels: the native wheel moves deltaY / zoom scroller pixels.
+    if (gesture === "wheel") {
+      await page.evaluate(() => { (window as any).scrollObservations = [] })
+      await page.mouse.wheel(0, (gap - targetGap) * zoom)
+    } else {
+      const pageStep = await stream.evaluate(el => Math.floor(el.clientHeight * 0.875))
+      await page.mouse.wheel(0, (gap - pageStep - targetGap) * zoom)
+      await frames(page, 45)
+      await stream.focus()
+      await page.evaluate(() => { (window as any).scrollObservations = [] })
+      await page.keyboard.press("PageDown")
+    }
     await frames(page, 45)
     const observations = await page.evaluate(() => (window as any).scrollObservations)
-    assert.ok(observations.some((sample: any) => Math.abs(sample.gap - targetGap) < 2), `The native wheel must stop at ${targetGap}px: ${JSON.stringify(observations)}`)
+    assert.ok(observations.some((sample: any) => Math.abs(sample.gap - targetGap) < 2), `The native ${gesture} must stop at ${targetGap}px: ${JSON.stringify(observations)}`)
     const state = await page.evaluate(() => (window as any).fixture.snapshot().scroll)
     assert.equal(state.followModeType, "escaped", `Proximity to the bottom is not explicit follow: ${JSON.stringify(state)}`)
     assert.equal(await latestButton(page).count(), 1, "A manual reader above the true bottom keeps the latest button")
-  })
+  }, { zoom })
 })
 
-test("manual reading resumes follow once the wheel reaches the true bottom", async () => {
+// Smoke coverage only: these geometries land within 1px of the reported bottom,
+// so they do not pin SCROLL_EDGE_TOLERANCE_PX (rendered geometry depends on the
+// installed fonts). The measured CSS-zoom residuals in virtual-follow-behavior.test.ts do.
+for (const [deviceScaleFactor, zoom] of [[1, 1], [1.5, 1.1], [1, 0.75]]) test(`the true bottom stays reachable by wheel (smoke, dpr=${deviceScaleFactor} zoom=${zoom})`, async () => {
   await open(async page => {
     await bottom(page)
     await page.locator(".message-stream").hover()
@@ -153,7 +171,41 @@ test("manual reading resumes follow once the wheel reaches the true bottom", asy
     await page.mouse.wheel(0, 400)
     await frames(page, 45)
     assert.equal(await page.evaluate(() => (window as any).fixture.snapshot().scroll.followModeType), "following")
-  })
+  }, { deviceScaleFactor, zoom })
+})
+
+// A wheel is clamped to the bottom laid out when it was made, and a page key
+// animates towards the bottom captured when it starts, so streamed growth
+// leaves either landing short of the new bottom. The reply starts short so its
+// later outgrowing of the viewport (a separate virtualizer re-estimation)
+// cannot coincide with the landing.
+for (const [gesture, zoom] of [["wheel 600", 1], ["wheel 5000", 1], ["wheel 600", 1.1], ["PageDown", 1], ["PageDown", 1.25]] as const) test(`a ${gesture} to the growing streaming tail resumes follow (zoom=${zoom})`, async () => {
+  await open(async page => {
+    await bottom(page)
+    await page.evaluate(() => (window as any).fixture.start())
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => (window as any).fixture.delta("Streaming paragraph text.\n\n".repeat(2)))
+      await frames(page, 2)
+    }
+    const stream = page.locator(".message-stream")
+    await stream.hover()
+    await page.mouse.wheel(0, -300)
+    await frames(page, 30)
+    assert.equal((await readerState(page)).followModeType, "escaped")
+    if (gesture === "PageDown") await stream.focus()
+    const pump = page.evaluate(() => new Promise<void>(resolve => {
+      let count = 0
+      const tick = () => { (window as any).fixture.delta("More streaming text.\n\n"); if (++count < 60) requestAnimationFrame(tick); else resolve() }
+      requestAnimationFrame(tick)
+    }))
+    if (gesture === "PageDown") await page.keyboard.press("PageDown")
+    else await page.mouse.wheel(0, gesture === "wheel 600" ? 600 : 5000)
+    await pump
+    await frames(page, 10)
+    const state = await readerState(page)
+    assert.deepEqual({ followModeType: state.followModeType, latestButton: state.latestButton }, { followModeType: "following", latestButton: 0 }, JSON.stringify(state))
+    assert.ok(state.gap <= 2, `The resumed reader must stay at the streaming tail: ${state.gap}px`)
+  }, { zoom })
 })
 
 test("nested follow-scroll output resumes only at its true bottom", async () => {
@@ -176,6 +228,63 @@ test("nested follow-scroll output resumes only at its true bottom", async () => 
     await page.mouse.wheel(0, 100)
     await frames(page, 10)
     assert.equal(await innerFollow(), true, "Reaching the output's true bottom resumes follow")
+  }, { name: "nested" })
+})
+
+// Plain buttons and links do not consume arrows: Chromium scrolls their
+// scroller, so an arrow from a focused output action is still scroll intent.
+test("an arrow key from a button inside growing nested output escapes its follow", async () => {
+  await open(async page => {
+    await page.evaluate(() => (window as any).fixture.bottom())
+    const output = page.locator("[data-nested-output]")
+    await output.waitFor({ state: "visible" })
+    await page.evaluate(() => (window as any).fixture.renderOutput())
+    await page.waitForFunction(() => (document.querySelector("[data-nested-output]")?.scrollTop ?? 0) > 1000)
+    await frames(page, 10)
+    assert.equal(await page.evaluate(() => (window as any).fixture.snapshot().innerFollow), true)
+    await page.locator("[data-output-action]").evaluate(button => (button as HTMLElement).focus({ preventScroll: true }))
+    for (let i = 0; i < 4; i++) {
+      await page.keyboard.press("ArrowUp")
+      await frames(page, 10)
+    }
+    for (let i = 0; i < 5; i++) {
+      await page.evaluate(() => (window as any).fixture.growOutput(20))
+      await frames(page, 4)
+    }
+    const innerFollow = await page.evaluate(() => (window as any).fixture.snapshot().innerFollow)
+    const gap = await output.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
+    assert.equal(innerFollow, false, `Arrow keys from a focused button must take ownership (gap ${gap}px)`)
+    assert.ok(gap > 100, `The escaped output must not be repinned: ${gap}px`)
+  }, { name: "nested" })
+})
+
+// Tool/reasoning output shares the transcript's gesture rule: reaching a
+// growing output's bottom by wheel or key resumes its follow.
+for (const gesture of ["wheel", "PageDown"] as const) test(`a ${gesture} to growing nested output resumes its follow`, async () => {
+  await open(async page => {
+    await page.evaluate(() => (window as any).fixture.bottom())
+    const output = page.locator("[data-nested-output]")
+    await output.waitFor({ state: "visible" })
+    await page.evaluate(() => (window as any).fixture.renderOutput())
+    await page.waitForFunction(() => (document.querySelector("[data-nested-output]")?.scrollTop ?? 0) > 1000)
+    await output.hover()
+    await page.mouse.wheel(0, -150)
+    await frames(page, 10)
+    assert.equal(await page.evaluate(() => (window as any).fixture.snapshot().innerFollow), false)
+    if (gesture === "PageDown") await output.focus()
+    const pump = page.evaluate(() => new Promise<void>(resolve => {
+      let count = 0
+      const tick = () => { (window as any).fixture.growOutput(20); if (++count < 60) requestAnimationFrame(tick); else resolve() }
+      requestAnimationFrame(tick)
+    }))
+    if (gesture === "PageDown") await page.keyboard.press("PageDown")
+    else await page.mouse.wheel(0, 600)
+    await pump
+    await frames(page, 10)
+    const innerFollow = await page.evaluate(() => (window as any).fixture.snapshot().innerFollow)
+    const gap = await output.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
+    assert.equal(innerFollow, true, `The output must follow its growing tail again (gap ${gap}px)`)
+    assert.ok(gap <= 2, `The resumed output must stay at its tail: ${gap}px`)
   }, { name: "nested" })
 })
 
@@ -251,6 +360,79 @@ for (const streamingSession of ["none", "A", "B"]) test(`retained A-B-A switch r
   }, { name: "switch" })
 })
 
+// Unlike Space, a pointer press on a <summary> still starts middle-button
+// autoscroll and text-selection drags, so their upward movement must escape a
+// streaming follow instead of fighting the pin.
+for (const gesture of ["middle-button autoscroll", "selection drag"] as const) test(`a ${gesture} started on a summary escapes a streaming follow`, async () => {
+  await open(async page => {
+    await bottom(page)
+    await page.evaluate(() => (window as any).fixture.start())
+    await frames(page, 4)
+    const stream = page.locator(".message-stream")
+    // Turn an in-flow transcript paragraph, well inside the viewport, into a summary.
+    await stream.evaluate(el => {
+      const bounds = el.getBoundingClientRect()
+      const paragraph = Array.from(el.querySelectorAll<HTMLElement>("[data-virtual-follow-key] p"))
+        .find(p => { const rect = p.getBoundingClientRect(); return rect.top >= bounds.top + 150 && rect.bottom <= bounds.bottom - 150 })!
+      const details = document.createElement("details")
+      details.innerHTML = "<summary data-press-target>Summary text that can be selected</summary><p>Body</p>"
+      paragraph.replaceWith(details)
+    })
+    await frames(page, 10)
+    assert.equal((await readerState(page)).followModeType, "following")
+    const box = (await page.locator("[data-press-target]").boundingBox())!
+    const [x, y] = [box.x + 40, box.y + box.height / 2]
+    assert.ok(await page.evaluate(([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest("[data-press-target]")), [x, y]), "The press must hit the summary")
+    await page.mouse.move(x, y)
+    await page.mouse.down({ button: gesture === "selection drag" ? "left" : "middle" })
+    for (let i = 1; i <= 8; i++) {
+      await page.mouse.move(x, y - i * 10)
+      await page.evaluate(() => (window as any).fixture.delta("Streamed while the pointer drags.\n\n"))
+      await frames(page, 3)
+    }
+    await page.mouse.up({ button: gesture === "selection drag" ? "left" : "middle" })
+    for (let i = 0; i < 6; i++) {
+      await page.evaluate(() => (window as any).fixture.delta("Streamed after release.\n\n".repeat(2)))
+      await frames(page, 3)
+    }
+    // The persisted snapshot updates on scroll events, which an escaped reader
+    // does not produce while content grows below; assert the visible state.
+    const state = await readerState(page)
+    assert.equal(state.latestButton, 1, `The ${gesture} must take ownership from the follow pin: ${JSON.stringify(state)}`)
+    assert.ok(state.gap > 48, `The reader must not be repinned to the streaming tail: ${JSON.stringify(state)}`)
+  })
+})
+
+// Space toggles a focused <summary> (like a button) instead of scrolling, so
+// it must not carry a page amplitude that "reaches" the bottom.
+for (const control of ["summary", "button"] as const) test(`Space on a focused ${control} near the bottom keeps manual reading`, async () => {
+  await open(async page => {
+    await bottom(page)
+    const stream = page.locator(".message-stream")
+    await stream.hover()
+    await page.mouse.wheel(0, -324)
+    await frames(page, 45)
+    await stream.evaluate((el, control) => {
+      const bounds = el.getBoundingClientRect()
+      const row = Array.from(el.querySelectorAll<HTMLElement>("[data-virtual-follow-key]"))
+        .find(row => { const rect = row.getBoundingClientRect(); return rect.top >= bounds.top && rect.bottom <= bounds.bottom })!
+      const host = control === "summary" ? document.createElement("details") : document.createElement("div")
+      host.innerHTML = control === "summary" ? "<summary data-space-target>Details</summary><p style='height:120px'>Body</p>" : "<button type='button' data-space-target>Act</button>"
+      row.prepend(host)
+    }, control)
+    await frames(page, 30)
+    const before = await readerState(page)
+    assert.equal(before.followModeType, "escaped")
+    assert.ok(before.gap > 40 && before.gap < 500, `Space's page amplitude would reach the bottom from here: ${before.gap}px`)
+    await page.locator("[data-space-target]").evaluate(target => (target as HTMLElement).focus({ preventScroll: true }))
+    await page.keyboard.press(" ")
+    await frames(page, 45)
+    const after = await readerState(page)
+    assert.deepEqual({ followModeType: after.followModeType, latestButton: after.latestButton }, { followModeType: "escaped", latestButton: 1 }, JSON.stringify({ before, after }))
+    assert.ok(after.gap >= before.gap - 2, `Space on a ${control} must not move the reader to the bottom: ${JSON.stringify({ before, after })}`)
+  })
+})
+
 test("streaming at the tail never paints a backward jump", async () => {
   await open(async page => {
     await bottom(page)
@@ -260,6 +442,62 @@ test("streaming at the tail never paints a backward jump", async () => {
     const backwards = samples.slice(1).filter((sample, i) => sample.anchorOffset !== null && samples[i].anchorOffset !== null && sample.anchorOffset > samples[i].anchorOffset! + 2)
     assert.deepEqual(backwards, [], "Streaming moved a following reader backward")
   })
+})
+
+/** Streams into A from the bottom until the long-reply hold escapes follow; returns the per-frame top row. */
+async function streamUntilHold(page: Page, scope: string) {
+  await bottom(page, scope)
+  await page.evaluate(stream => {
+    const w = window as any
+    w.topRows = []
+    const tick = () => {
+      const el = document.querySelector(stream)!, bounds = el.getBoundingClientRect()
+      const row = Array.from(el.querySelectorAll("[data-virtual-follow-key]")).find(row => { const rect = row.getBoundingClientRect(); return rect.top <= bounds.top && rect.bottom > bounds.top })
+      w.topRows.push(row?.getAttribute("data-virtual-follow-key"))
+      if (!w.stopTopRows) requestAnimationFrame(tick)
+    }
+    w.stopTopRows = false
+    requestAnimationFrame(tick)
+  }, `${scope} .message-stream`)
+  await page.evaluate(() => (window as any).fixture.start("A"))
+  let held = false
+  for (let i = 0; i < 200 && !held; i++) {
+    await page.evaluate(() => (window as any).fixture.delta("A", "Long streamed paragraph for the hold.\n\n".repeat(2)))
+    await frames(page, 2)
+    held = (await page.evaluate(() => (window as any).fixture.snapshot().scroll.followModeType)) === "escaped"
+  }
+  assert.ok(held, "A long streamed reply must engage the hold")
+  for (let i = 0; i < 20; i++) {
+    await page.evaluate(() => (window as any).fixture.delta("A", "After hold.\n\n"))
+    await frames(page, 2)
+  }
+  return page.evaluate(() => { (window as any).stopTopRows = true; return (window as any).topRows as Array<string | undefined> })
+}
+
+test("the long-reply hold persists while streaming and the latest button resumes", async () => {
+  const scope = '[data-session-id="A"]'
+  await open(async page => {
+    await streamUntilHold(page, scope)
+    const held = await readerState(page, scope)
+    assert.deepEqual({ followModeType: held.followModeType, latestButton: held.latestButton }, { followModeType: "escaped", latestButton: 1 }, JSON.stringify(held))
+    await bottom(page, scope)
+    const resumed = await readerState(page, scope)
+    assert.deepEqual({ followModeType: resumed.followModeType, latestButton: resumed.latestButton }, { followModeType: "following", latestButton: 0 }, JSON.stringify(resumed))
+    assert.ok(resumed.gap <= 1, `The latest button must reach the streaming tail: ${resumed.gap}px`)
+  }, { name: "switch", hold: true })
+})
+
+// Documents a pre-existing displacement (also on the pre-#967 base): on the
+// frame the hold escapes, Virtua re-estimates never-measured history rows and
+// the view lands around msg_0030_A instead of the held streaming reply. It is
+// diagnosed with the scroll trace in a follow-up and intentionally not fixed here.
+test("the long-reply hold keeps the streaming reply in view when it escapes", { todo: "hold escape displaces the reader to older history (follow-up)" }, async () => {
+  const scope = '[data-session-id="A"]'
+  await open(async page => {
+    const topRows = await streamUntilHold(page, scope)
+    const displaced = topRows.filter(key => key && key !== "stream-A" && !/^msg_005[5-9]_A$/.test(key))
+    assert.deepEqual(displaced, [], `The hold escape moved the reader away from the streaming tail: ${JSON.stringify(topRows)}`)
+  }, { name: "switch", hold: true })
 })
 
 for (const streaming of [false, true]) test(`remount retains an intra-message anchor without oscillating (streaming=${streaming})`, async () => {

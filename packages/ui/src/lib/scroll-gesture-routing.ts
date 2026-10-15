@@ -1,3 +1,8 @@
+import { canScrollInDirection } from "../components/virtual-follow-behavior"
+
+/** Controls that consume a pointer press: neither middle-button autoscroll nor a selection drag starts on them. */
+export const POINTER_CONTROL_SELECTOR = "a[href],button,input,textarea,select,[contenteditable]:not([contenteditable='false']),[role='button'],[role='textbox']"
+
 const WHEEL_GESTURE_IDLE_MS = 180
 const MIDDLE_DEAD_ZONE_PX = 8
 
@@ -14,11 +19,22 @@ function wheelTarget(root: HTMLElement, target: EventTarget | null, dy: number):
   let node = target instanceof Element ? target : null
   while (node && node !== root) {
     if (node instanceof HTMLElement) {
-      if (scrollAxes(node).y && (dy < 0 ? node.scrollTop > 0 : node.scrollTop + node.clientHeight < node.scrollHeight - 1)) return node
+      if (scrollAxes(node).y && canScrollInDirection(node, dy < 0 ? "up" : "down")) return node
     }
     node = node.parentElement
   }
   return root
+}
+
+/** Effective CSS zoom of `element`. The app zooms natively (1 here); CSS zoom still scales input. */
+export function getElementZoom(element: Element) {
+  return element.currentCSSZoom || 1
+}
+
+/** Scroller pixels per wheel delta unit: pixel deltas are page pixels, so 1/zoom under CSS zoom (measured). */
+export function wheelDeltaUnit(event: WheelEvent, element: HTMLElement) {
+  return event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? element.clientHeight
+    : event.deltaMode === WheelEvent.DOM_DELTA_LINE ? parseFloat(getComputedStyle(element).lineHeight) || 16 : 1 / getElementZoom(element)
 }
 
 function middleTargets(root: HTMLElement, target: EventTarget | null) {
@@ -62,8 +78,7 @@ export function attachScrollGestureRouting(root: HTMLElement): () => void {
     event.preventDefault()
     event.stopPropagation()
     owner.dispatchEvent(new WheelEvent("wheel", { deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, bubbles: true }))
-    const unit = event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? owner.clientHeight
-      : event.deltaMode === WheelEvent.DOM_DELTA_LINE ? parseFloat(getComputedStyle(owner).lineHeight) || 16 : 1
+    const unit = wheelDeltaUnit(event, owner)
     owner.scrollBy({ left: event.deltaX * unit, top: event.deltaY * unit, behavior: "instant" })
   }
 
@@ -91,7 +106,7 @@ export function attachScrollGestureRouting(root: HTMLElement): () => void {
   const down = (event: PointerEvent) => {
     if (!event.isTrusted || event.button !== 1 || event.defaultPrevented) return
     // Preserve middle-click link opening and editable/control behavior.
-    if (event.target instanceof Element && event.target.closest("a[href],button,input,textarea,select,[contenteditable]:not([contenteditable='false']),[role='button'],[role='textbox']")) return
+    if (event.target instanceof Element && event.target.closest(POINTER_CONTROL_SELECTOR)) return
     stopMiddle()
     wheelOwner = undefined
     const owners = middleTargets(root, event.target)
