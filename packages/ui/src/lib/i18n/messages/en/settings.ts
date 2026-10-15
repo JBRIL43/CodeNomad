@@ -1,6 +1,10 @@
 export const settingsMessages = {
   "settings.native.openFailed": "Preferences could not open in their window. Restart or update the CodeNomad desktop app, then try again.",
   "settings.accounts.current": "Active account",
+  "settings.pluginPackages.check": "Check updates for {target}",
+  "settings.pluginPackages.update": "Update {target}",
+  "settings.pluginPackages.shared": "Updates this package target in the shared OpenCode cache for all locations using it.",
+  "settings.pluginPackages.error": "Package operation failed for {target}. Refresh to reconcile its status.",
   "settings.accounts.title": "Accounts",
   "settings.accounts.add": "Add account",
   "settings.accounts.rename": "Rename account",

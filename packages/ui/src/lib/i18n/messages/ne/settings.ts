@@ -1,6 +1,10 @@
 export const settingsMessages = {
   "settings.native.openFailed": "प्राथमिकताहरू तिनको विन्डोमा खोल्न सकिएन। CodeNomad एप पुनः सुरु गर्नुहोस् वा अद्यावधिक गर्नुहोस्, त्यसपछि फेरि प्रयास गर्नुहोस्।",
   "settings.accounts.current": "सक्रिय खाता",
+  "settings.pluginPackages.check": "{target} का अद्यावधिक जाँच्नुहोस्",
+  "settings.pluginPackages.update": "{target} अद्यावधिक गर्नुहोस्",
+  "settings.pluginPackages.shared": "यो प्याकेज प्रयोग गर्ने सबै स्थानहरूको साझा OpenCode क्यास अद्यावधिक गर्छ।",
+  "settings.pluginPackages.error": "{target} को प्याकेज कार्य असफल भयो। अवस्था हेर्न रिफ्रेस गर्नुहोस्।",
   "settings.accounts.title": "खाताहरू",
   "settings.accounts.add": "खाता थप्नुहोस्",
   "settings.accounts.rename": "खाताको नाम बदल्नुहोस्",

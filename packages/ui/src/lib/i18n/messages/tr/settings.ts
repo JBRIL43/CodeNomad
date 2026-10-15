@@ -1,6 +1,10 @@
 export const settingsMessages = {
   "settings.native.openFailed": "Tercihler kendi penceresinde açılamadı. CodeNomad uygulamasını yeniden başlatın veya güncelleyin, ardından tekrar deneyin.",
   "settings.accounts.current": "Etkin hesap",
+  "settings.pluginPackages.check": "{target} güncellemelerini denetle",
+  "settings.pluginPackages.update": "{target} güncelle",
+  "settings.pluginPackages.shared": "Paketi kullanan tüm konumlar için paylaşılan OpenCode önbelleğini günceller.",
+  "settings.pluginPackages.error": "{target} paket işlemi başarısız oldu. Durum için yenileyin.",
   "settings.accounts.title": "Hesaplar",
   "settings.accounts.add": "Hesap ekle",
   "settings.accounts.rename": "Hesabı yeniden adlandır",

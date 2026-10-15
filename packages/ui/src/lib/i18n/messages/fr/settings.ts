@@ -1,6 +1,10 @@
 export const settingsMessages = {
   "settings.native.openFailed": "Les préférences n'ont pas pu s'ouvrir dans leur fenêtre. Redémarrez ou mettez à jour l'application CodeNomad, puis réessayez.",
   "settings.accounts.current": "Compte actif",
+  "settings.pluginPackages.check": "Vérifier les mises à jour de {target}",
+  "settings.pluginPackages.update": "Mettre à jour {target}",
+  "settings.pluginPackages.shared": "Met à jour cette cible dans le cache OpenCode partagé pour tous les dossiers qui l’utilisent.",
+  "settings.pluginPackages.error": "Échec de l’opération sur {target}. Actualisez pour consulter son état.",
   "settings.accounts.title": "Comptes",
   "settings.accounts.add": "Ajouter un compte",
   "settings.accounts.rename": "Renommer le compte",

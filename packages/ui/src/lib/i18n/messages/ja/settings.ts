@@ -1,6 +1,10 @@
 export const settingsMessages = {
   "settings.native.openFailed": "設定ウィンドウを開けませんでした。CodeNomad アプリを再起動または更新してから、もう一度お試しください。",
   "settings.accounts.current": "有効なアカウント",
+  "settings.pluginPackages.check": "{target} の更新を確認",
+  "settings.pluginPackages.update": "{target} を更新",
+  "settings.pluginPackages.shared": "このパッケージを使用する全ディレクトリの共有OpenCodeキャッシュを更新します。",
+  "settings.pluginPackages.error": "{target} の操作に失敗しました。更新して状態を確認してください。",
   "settings.accounts.title": "アカウント",
   "settings.accounts.add": "アカウントを追加",
   "settings.accounts.rename": "アカウント名を変更",
