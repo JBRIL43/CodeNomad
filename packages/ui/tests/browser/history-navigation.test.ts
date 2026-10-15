@@ -356,6 +356,25 @@ test("resident streaming keeps a distant timeline marker mounted", async () => {
   } finally { await f.close() }
 })
 
+test("a resized timeline keeps its bottom edge anchored", async () => {
+  const f = await fixture()
+  try {
+    const rail = f.page.locator(".message-timeline")
+    await rail.hover()
+    await rail.evaluate(element => { element.scrollTop = element.scrollHeight / 2 })
+    const before = await rail.evaluate(element => ({ height: element.clientHeight, bottom: element.scrollTop + element.clientHeight }))
+    // Markers resize in the same step (zoom-like): the anchor must survive the geometry update.
+    await rail.evaluate(element => {
+      document.head.appendChild(document.createElement("style")).textContent = ".message-timeline-segment { height: 26px !important }"
+      element.style.maxHeight = `${element.clientHeight - 120}px`
+    })
+    await f.page.waitForTimeout(300)
+    const after = await rail.evaluate(element => ({ height: element.clientHeight, bottom: element.scrollTop + element.clientHeight }))
+    assert(after.height < before.height && Math.abs(after.bottom - before.bottom) < 2, JSON.stringify({ before, after }))
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
 test("timeline previews render bounded Markdown for historical and resident messages", async () => {
   const f = await fixture(true)
   try {
