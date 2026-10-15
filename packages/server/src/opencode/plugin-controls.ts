@@ -32,6 +32,7 @@ import {
   PluginControlDocumentError,
 } from "./plugin-control-document"
 import { createWslPluginControlDocumentFileSystem } from "./plugin-control-document-wsl"
+import { readNativeSetting } from "./native-setting-document"
 
 type PluginControlsWorkspaceManager = Pick<WorkspaceManager,
   | "get"
@@ -839,4 +840,3 @@ function assertCurrentConnection(connection: ServiceConnection): void {
 function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
-import { readNativeSetting } from "./native-setting-document"
