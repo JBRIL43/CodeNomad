@@ -144,6 +144,23 @@ with its attribution state on the next list action/observation after disabling.
 diagnostic-entry allocations; the scroll operation literals and follow-mode binding
 still exist.
 
+Each measurement reset remounts Virtua with the key-remapped size cache. The remount
+keeps the carried default row size as `itemSize`: Virtua's one-time median
+re-estimate would otherwise fire later (once a streaming reply outgrows the viewport,
+or after the long-reply hold escapes) and resize every never-measured history row at
+once; near the bottom the browser clamps before Virtua compensates, an `unowned`
+backward jump of many rows. When every retained row is measured, the remap refreshes
+that default to their median, so a 40px fallback carried by an instance that remounted
+before estimating lasts only until the first remount whose retained rows are all
+measured. A new instance reads offset 0 until the next scroll event, so a non-zero
+offset is seeded by one scroll event (the
+remount has already recreated every row). The long-reply hold publishes its escaped
+position itself, since it scrolls nothing. Gestures and explicit navigation supersede
+restoration, alignment and bottom pins through one function; deactivation, session
+reset and unmount stop every list-owned positioning operation (including a
+restoration in flight) through another, and deactivation also releases Virtua's
+queued imperative scroll.
+
 Browser checks load the complete stylesheet and cover overflow, hover, keyboard
 focus, RTL and 125% zoom, mixed text/tool/idle records, actual native thumb dragging,
 and viewport anchor stability during streaming and distant jumps.

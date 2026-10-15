@@ -202,6 +202,31 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
     onCancelled()
   }
 
+  /** A user gesture or explicit navigation supersedes restoration, alignment and any bottom pin. */
+  function supersedePositioning() {
+    cancelActiveScrollRestore()
+    if (hasActiveExplicitBottomPin() || explicitBottomPinIntent()) cancelExplicitBottomPinFromUser()
+  }
+
+  /**
+   * Silently stops every list-owned positioning operation and its pending
+   * frame, for deactivation, session reset and unmount. The owner of a
+   * restoration fences its own callbacks on those transitions.
+   */
+  function stopPositioning() {
+    readerSettlement.cancel()
+    cancelElementAlignment()
+    invalidateScrollRestore()
+    clearExplicitBottomPin()
+    if (pendingContentRenderedFrame !== null) cancelAnimationFrame(pendingContentRenderedFrame)
+    pendingContentRenderedFrame = null
+    if (pendingExplicitBottomPinFrame !== null) cancelAnimationFrame(pendingExplicitBottomPinFrame)
+    pendingExplicitBottomPinFrame = null
+    if (pendingViewportResizeFrame !== null) cancelAnimationFrame(pendingViewportResizeFrame)
+    pendingViewportResizeFrame = null
+    pendingViewportHeightDelta = 0
+  }
+
   /** The only follow-mode write; `source` labels the transition and any scroll it causes. */
   function syncControllerResult(result: ScrollControllerResult, source: ScrollReason) {
     if (scrollTraceEnabled()) {
@@ -249,8 +274,7 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
   function markUserScrollIntent(direction: "up" | "down" | null, distance = 0) {
     programmaticScrollUntil = 0
     props.onScrollIntent?.(direction)
-    cancelActiveScrollRestore()
-    if (hasActiveExplicitBottomPin() || explicitBottomPinIntent()) cancelExplicitBottomPinFromUser()
+    supersedePositioning()
     const element = scrollElement()
     syncControllerResult(scrollController.userGesture(direction, performance.now() + USER_SCROLL_INTENT_WINDOW_MS, element ? getDomMetrics(element) : null, distance), "user-gesture")
     if (element && pendingVirtuaScroll) {
@@ -548,6 +572,10 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
 
     dispatchFollowEvent({ type: "set-follow", enabled: false }, "hold")
     scrollController.recordProgrammaticOffset(virtuaHandle()?.scrollOffset ?? element.scrollTop)
+    // The hold changes the mode without a scroll, and growth below an escaped
+    // reader scrolls nothing either: publish the held position now, as the
+    // follow pin that preceded it did.
+    props.onScroll?.(captureScrollSnapshot())
     return true
   }
 
@@ -990,8 +1018,7 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
   }
 
   function scrollToTop(immediate = true) {
-    cancelActiveScrollRestore()
-    if (hasActiveExplicitBottomPin() || explicitBottomPinIntent()) cancelExplicitBottomPinFromUser()
+    supersedePositioning()
     dispatchFollowEvent({ type: "jump-top", immediate })
   }
 
@@ -1006,8 +1033,7 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
   }
 
   function scrollToKey(key: string, opts?: { block?: ScrollLogicalPosition }) {
-    cancelActiveScrollRestore()
-    if (hasActiveExplicitBottomPin() || explicitBottomPinIntent()) cancelExplicitBottomPinFromUser()
+    supersedePositioning()
     dispatchFollowEvent({ type: "jump-key", key, block: opts?.block ?? "start", smooth: false })
   }
 
@@ -1019,8 +1045,7 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
   function alignElement(target: HTMLElement, viewportOffset: number) {
     const element = scrollElement()
     if (!element || !element.contains(target)) return
-    cancelActiveScrollRestore()
-    if (hasActiveExplicitBottomPin() || explicitBottomPinIntent()) cancelExplicitBottomPinFromUser()
+    supersedePositioning()
     dispatchFollowEvent({ type: "set-follow", enabled: false }, "align-element")
     // A keyboard activation can happen off-screen (or mid-layout); always land in view.
     const offset = Math.min(Math.max(viewportOffset, 0), Math.max(0, element.clientHeight - ELEMENT_ALIGNMENT_BOTTOM_MARGIN_PX))
@@ -1207,15 +1232,9 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
 
   createEffect(on(() => props.resetKey?.(), (nextKey) => {
     if (nextKey === lastResetKey) return
-    readerSettlement.cancel()
-    cancelElementAlignment()
     lastResetKey = nextKey
-    invalidateScrollRestore()
+    stopPositioning()
     lastHandledExplicitBottomPinToken = null
-    clearExplicitBottomPin()
-    if (pendingViewportResizeFrame !== null) cancelAnimationFrame(pendingViewportResizeFrame)
-    pendingViewportResizeFrame = null
-    pendingViewportHeightDelta = 0
     dispatchFollowEvent({ type: "reset", follow: initialAutoScroll() })
     pendingInitialScroll = true
     windowShiftGeneration += 1
@@ -1230,11 +1249,19 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
 
   createEffect(on(isActive, (active) => {
     if (!active) {
-      readerSettlement.cancel()
-      cancelElementAlignment()
-      if (pendingExplicitBottomPinFrame !== null) cancelAnimationFrame(pendingExplicitBottomPinFrame)
-      pendingExplicitBottomPinFrame = null
-      clearExplicitBottomPin()
+      // Includes a restoration in flight: its frames stop at inactivity, and
+      // an armed restart or a sticky `restoring` would outlive this session view.
+      stopPositioning()
+      // Virtua keeps reasserting a queued imperative target (e.g. the restore
+      // index) after it lands; release it so the hidden list stays put. Only
+      // here: on reset, the next session's positioning replaces that queue.
+      // Unlike a gesture, no scroll event is dispatched first: it would publish
+      // an observation and snapshot from an inactive list, and a stale Virtua
+      // offset is harmless while hidden because reactivation restores anew.
+      if (pendingVirtuaScroll) {
+        pendingVirtuaScroll = false
+        writeScroll("cancel-virtua", { type: "release" })
+      }
       return
     }
     if (pendingInitialScroll && props.items().length > 0) {
@@ -1287,12 +1314,7 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
   })
 
   onCleanup(() => {
-    invalidateScrollRestore()
-    readerSettlement.cancel()
-    cancelElementAlignment()
-    clearExplicitBottomPin()
-    if (pendingContentRenderedFrame !== null) cancelAnimationFrame(pendingContentRenderedFrame)
-    if (pendingExplicitBottomPinFrame !== null) cancelAnimationFrame(pendingExplicitBottomPinFrame)
+    stopPositioning()
     windowShiftGeneration += 1
     virtualContentResizeObserver?.disconnect()
     virtualContentResizeObserver = null
@@ -1324,7 +1346,28 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
           {(authority) => (
             <Virtualizer
               cache={authority.cache}
-              ref={setVirtuaHandle}
+              // Each instance otherwise re-estimates its default row size once
+              // newly measured rows outgrow the viewport (e.g. a streaming reply)
+              // and resizes every never-measured row at once. A remount already
+              // carries the previous estimate (`cache[1]`, refreshed by the remap):
+              // keep it, so measurement stays the only size change Virtua has to
+              // compensate above a reader. This also applies `bufferSize`
+              // overscan from the first frame, so each remount mounts more rows.
+              // CacheSnapshot is internal to Virtua; its layout and this itemSize
+              // contract are pinned by virtual-follow-measurements.test.ts.
+              itemSize={authority.cache?.[1]}
+              ref={handle => {
+                setVirtuaHandle(handle)
+                // A new instance reads offset 0 until the next scroll event, so it
+                // would render and measure the head rows instead of the viewport.
+                // Its scroll listener attaches right after this ref: seed it. The
+                // remount has already recreated every row, so the scroll-driven
+                // closing of image previews and quote selections loses nothing.
+                if (handle) queueMicrotask(() => {
+                  const element = scrollElement()
+                  if (virtuaHandle() === handle && element && element.scrollTop > 0) element.dispatchEvent(new Event("scroll"))
+                })
+              }}
               scrollRef={scrollElement()}
               startMargin={beforeItemsHeight()}
               data={virtualItems()}
