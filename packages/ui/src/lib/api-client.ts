@@ -605,11 +605,13 @@ export const serverApi = {
       body: JSON.stringify({ path }),
     })
   },
-  fetchOpenCodeUpdateStatus(): Promise<OpenCodeUpdateStatus> {
-    return request<OpenCodeUpdateStatus>("/api/opencode/update")
+  /** `recheck` marks an explicit user check, which refreshes the server's cached version probes. */
+  fetchOpenCodeUpdateStatus(options: { recheck?: boolean } = {}): Promise<OpenCodeUpdateStatus> {
+    return request<OpenCodeUpdateStatus>(options.recheck ? "/api/opencode/update?recheck=1" : "/api/opencode/update")
   },
-  updateOpenCode(): Promise<OpenCodeUpdateResponse> {
-    return request<OpenCodeUpdateResponse>("/api/opencode/update", { method: "POST" })
+  updateOpenCode(options: { replaceLegacy?: { path: string; version: string } } = {}): Promise<OpenCodeUpdateResponse> {
+    return request<OpenCodeUpdateResponse>("/api/opencode/update", { method: "POST",
+      body: JSON.stringify(options.replaceLegacy ? { replaceLegacy: { path: options.replaceLegacy.path, version: options.replaceLegacy.version } } : {}) })
   },
   startOpenCode(restart = false): Promise<OpenCodeUpdateStatus> {
     return request<OpenCodeUpdateStatus>("/api/opencode/service", { method: "POST", body: JSON.stringify({ restart }) })
