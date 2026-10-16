@@ -46,8 +46,11 @@ import { useSpeech } from "../lib/hooks/use-speech"
 import { createFollowScroll } from "../lib/follow-scroll"
 import ActionOverflowMenu, { type ActionOverflowMenuItem } from "./action-overflow-menu"
 import { observeActionOverflow } from "./measured-action-overflow"
+import { observeToolStatusCompaction } from "./tool-status-compaction"
 import SpeechActionButton from "./speech-action-button"
 import { ToolOutputImages } from "./tool-call/output-images"
+import { PartDuration } from "./part-duration"
+import { getPartEndedAt, getPartStartedAt } from "../lib/message-timing"
 import { isToolImageContent } from "../lib/tool-content"
 
 const log = getLogger("session")
@@ -96,7 +99,7 @@ function ToolStatusIndicator(props: { status: Accessor<string>; t: ReturnType<ty
   const label = () => props.t(`toolCall.status.${resolvedStatus()}`)
 
   return (
-    <span class="tool-call-header-status" role="status" aria-label={label()} data-status={resolvedStatus()}>
+    <span class="tool-call-header-status" role="status" aria-label={label()} title={label()} data-status={resolvedStatus()}>
       <span class="tool-call-header-status-icon" aria-hidden="true" style={{ display: isVisible("pending") ? "inline-flex" : "none" }}>
         <Hourglass class="w-4 h-4" />
       </span>
@@ -872,11 +875,16 @@ export default function ToolCall(props: ToolCallProps) {
           aria-expanded={expanded()}
         >
           <ChevronRight class="tool-call-disclosure disclosure-chevron" aria-hidden="true" />
-          <span class="tool-call-summary">
+          <span class="tool-call-summary" ref={observeToolStatusCompaction}>
             <span class="tool-call-summary-type">{renderedToolTypeLabel()}</span>
             <Show when={renderedHeaderTitleDetail()}>
               {(detail) => <span class="tool-call-summary-title">{detail()}</span>}
             </Show>
+            <PartDuration
+              startedAt={getPartStartedAt(toolCallMemo() as any)}
+              endedAt={status() === "completed" || status() === "error" ? getPartEndedAt(toolCallMemo() as any) : undefined}
+              running={status() === "running"}
+            />
             <ToolStatusIndicator status={status} t={t} />
           </span>
         </button>
