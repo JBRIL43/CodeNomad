@@ -715,9 +715,14 @@ export default function VirtualFollowList<T>(props: VirtualFollowListProps<T>) {
   function findTopVisibleAnchor(element: HTMLDivElement) {
     const containerRect = element.getBoundingClientRect()
     const candidates = []
-    for (const [key, itemElement] of itemElements) {
-      if (!itemElement.isConnected) continue
-      const rect = itemElement.getBoundingClientRect()
+    // Read the rendered rows, not itemElements: a list being unmounted has
+    // already dropped those entries while its rows remain laid out. Rows sit at
+    // scroller > Virtua root > item > row; never walk their content.
+    for (const root of element.children) for (const item of root.children) {
+      const row = item.firstElementChild
+      const key = row instanceof HTMLElement ? row.dataset.virtualFollowKey : undefined
+      if (key === undefined) continue
+      const rect = row!.getBoundingClientRect()
       candidates.push({ key, top: rect.top, bottom: rect.bottom })
     }
     const handle = virtuaHandle()

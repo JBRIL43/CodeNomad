@@ -10,7 +10,7 @@ import { createServer, type ViteDevServer } from "vite"
 import solid from "vite-plugin-solid"
 import { readNavigationWindow, readSessionOutline } from "../../../server/src/opencode/session-pruning/navigation-store"
 import { readOutlinePreviews } from "../../../server/src/opencode/session-pruning/outline-preview"
-import { navigationMessage, navigationMessageId, mixedNavigationMessage } from "./fixtures/history-navigation-data"
+import { navigationMessage, navigationMessageId, mixedNavigationMessage, deepNavigationMessage } from "./fixtures/history-navigation-data"
 import { createFixtureCache } from "./fixture-cache"
 
 let server: ViteDevServer, browser: Browser, url: string
@@ -31,7 +31,7 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close(); await cache?.dispose() })
 
-async function fixture(mixed = false, pausePreviews = false, holdMessages = false) {
+async function fixture(mixed = false, pausePreviews = false, holdMessages = false, deep = false) {
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
   const databaseDirectory = await mkdtemp(path.join(os.tmpdir(), "codenomad-outline-browser-"))
   const databasePath = path.join(databaseDirectory, "history.sqlite")
@@ -43,7 +43,7 @@ async function fixture(mixed = false, pausePreviews = false, holdMessages = fals
     INSERT INTO session_v2 VALUES ('s','/fixture','p',NULL,NULL);`)
   const insert = db.prepare("INSERT INTO session_message(id,session_id,type,seq,data) VALUES (?,'s',?,?,?)")
   for (let index = 0; index < 1500; index++) {
-    const { id, type, ...data } = (mixed ? mixedNavigationMessage : navigationMessage)(index)
+    const { id, type, ...data } = (mixed ? mixedNavigationMessage : deep ? deepNavigationMessage : navigationMessage)(index)
     insert.run(id, type, index, JSON.stringify(data))
   }
   if (mixed) {
@@ -100,9 +100,11 @@ async function fixture(mixed = false, pausePreviews = false, holdMessages = fals
     }
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) }).catch(() => {})
   })
-  await page.goto(url + `?${mixed ? "mixed&" : ""}${holdMessages ? "holdMessages" : ""}`)
+  await page.goto(url + `?${mixed ? "mixed&" : ""}${deep ? "deep&" : ""}${holdMessages ? "holdMessages" : ""}`)
   await page.waitForFunction(() => Boolean((window as any).fixture))
-  await page.locator('.message-timeline[data-segment-count="1500"]').waitFor()
+  // The deep fixture's tool rows contribute extra segments.
+  if (deep) await page.waitForFunction(() => Number(document.querySelector(".message-timeline")?.getAttribute("data-segment-count")) >= 1500)
+  else await page.locator('.message-timeline[data-segment-count="1500"]').waitFor()
   if (!holdMessages) await page.waitForFunction(() => (window as any).fixture.snapshot().ids.length === 200)
   return { page, windows, errors, outlines, outlineReplies, previewRequests, resumeOutline,
     holdIndex: () => { indexGate = new Promise<void>(resolve => { releaseIndex = resolve }); return () => { releaseIndex?.(); indexGate = undefined } },
@@ -319,6 +321,418 @@ test("global timeline jumps over 1200 messages in one bounded window and restore
     assert.deepEqual(f.errors, [])
     const captures = path.join(os.tmpdir(), "opencode"); await mkdir(captures, { recursive: true })
     await f.page.screenshot({ path: path.join(captures, "history-navigation.png") })
+  } finally { await f.close() }
+})
+
+// A jump's page commit stores its intended position before the list reaches
+// it. Cancelling after that commit must store the reader's actual position at
+// once, not only after a later scroll event happens to persist it. Right after
+// the commit the remounted list can sit at the bottom of its estimated content;
+// a capture there carries no anchor, so it must match the DOM offset instead,
+// and must not inherit the commit's intended anchor.
+test("cancelling a committed timeline jump stores the reader's actual position", async () => {
+  const f = await fixture()
+  const readStoredPosition = `(() => {
+    const scroll = { ...window.fixture.snapshot().scroll }
+    const stream = document.querySelector('.message-stream')
+    const row = stream.querySelector('[data-virtual-follow-key="' + scroll.anchorKey + '"]')
+    return { scroll, offset: row ? row.getBoundingClientRect().top - stream.getBoundingClientRect().top : null,
+      domScrollTop: stream.scrollTop, domAtBottom: stream.scrollHeight - stream.clientHeight - stream.scrollTop <= 1 }
+  })()`
+  try {
+    // This is the restored list's case: let the startup restore settle first
+    // (its persisted capture is the first snapshot carrying the list's extent).
+    await f.page.waitForFunction(() => (window as any).fixture.snapshot().scroll?.maxScrollTop !== undefined)
+    await f.page.evaluate(`(async () => {
+      const { messageStoreBus } = await import('/src/stores/message-v2/bus.ts')
+      const stop = messageStoreBus.onScrollSnapshotChanged((_instance, _session, _scope, snapshot) => {
+        if (snapshot.anchorKey !== ${JSON.stringify(navigationMessageId(250))}) return
+        stop()
+        queueMicrotask(() => {
+          document.querySelector('.history-navigation-status button').click()
+          window.cancelledPosition = ${readStoredPosition}
+        })
+      })
+    })()`)
+    await clickTimeline(f.page, 250)
+    await f.page.waitForFunction(() => Boolean((window as any).cancelledPosition))
+    await f.page.locator(".history-navigation-status").waitFor({ state: "hidden" })
+    await f.page.evaluate(`new Promise(resolve => { let count = 30; const next = () => --count ? requestAnimationFrame(next) : resolve(); requestAnimationFrame(next) })`)
+    const states = { cancelled: await f.page.evaluate(() => (window as any).cancelledPosition), settled: await f.page.evaluate(readStoredPosition) }
+    for (const [when, state] of Object.entries(states)) {
+      const actual = state.scroll.anchorKey !== undefined
+        ? state.offset !== null && Math.abs(state.offset - state.scroll.anchorOffset) < 4
+        : state.scroll.atBottom && state.domAtBottom && Math.abs(state.scroll.scrollTop - state.domScrollTop) < 2
+      assert.ok(actual, `Stored position (${when}) is not the reader's: ${JSON.stringify(state)}`)
+    }
+    assert.ok(states.settled.scroll.anchorKey !== undefined, `The settled reader must be anchored: ${JSON.stringify(states.settled)}`)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+const waitFrames = (page: Page, count = 30) => page.evaluate(`new Promise(resolve => { let count = ${count}; const next = () => --count ? requestAnimationFrame(next) : resolve(); requestAnimationFrame(next) })`)
+const seedSavedPosition = (page: Page, anchorKey: string) => page.evaluate(`(async () => {
+  const { messageStoreBus } = await import('/src/stores/message-v2/bus.ts')
+  messageStoreBus.getOrCreate('navigation').setScrollSnapshot('s', 'message-stream', { scrollTop: 100, atBottom: false,
+    anchorKey: ${JSON.stringify(anchorKey)}, anchorOffset: 0, followModeType: 'escaped', windowIsLatest: true })
+})()`)
+/** The active search occurrence relative to the transcript viewport. */
+const activeOccurrence = (page: Page) => page.evaluate(`(() => {
+  const range = [...(CSS.highlights.get('codenomad-search-active') ?? [])][0]
+  const stream = document.querySelector('.message-stream'), bounds = stream.getBoundingClientRect()
+  if (!range) return null
+  const rect = range.getBoundingClientRect()
+  return { text: range.toString(), top: rect.top - bounds.top, bottom: rect.bottom - bounds.top, viewport: stream.clientHeight }
+})()`) as Promise<{ text: string; top: number; bottom: number; viewport: number } | null>
+const rowOffset = (page: Page, index: number) => page.evaluate(`(() => {
+  const stream = document.querySelector('.message-stream'), row = stream.querySelector('[data-virtual-follow-key="${navigationMessageId(index)}"]')
+  return row ? row.getBoundingClientRect().top - stream.getBoundingClientRect().top : null
+})()`) as Promise<number | null>
+
+// The timeline is usable before the transcript hydrates. A jump cancelled
+// before it positions anything must leave the activation restore pending.
+test("a jump cancelled before hydration still restores the saved passage", async () => {
+  const f = await fixture(false, false, true)
+  try {
+    await seedSavedPosition(f.page, navigationMessageId(1450))
+    const release = f.hold(250)
+    await clickTimeline(f.page, 250)
+    await f.page.locator(".history-navigation-status").waitFor()
+    await f.page.locator(".history-navigation-status button").click()
+    await f.page.locator(".history-navigation-status").waitFor({ state: "hidden" })
+    release()
+    await f.page.evaluate(() => (window as any).fixture.releaseMessages())
+    await assertPassageAtTop(f.page, 1450)
+    assert.equal((await snapshot(f.page)).scroll.anchorKey, navigationMessageId(1450))
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// The page commit replaces the stored position and window with its
+// destination. Once the jump is cancelled, the pending restore must still
+// return to the saved position: a passage, the latest bottom, or (none saved)
+// the latest bottom too, reopening the latest window the commit replaced.
+for (const saved of ["passage", "latest bottom", "none"] as const) test(`a jump cancelled after its page commit, before hydration, still restores the saved position (${saved})`, async () => {
+  const f = await fixture(false, false, true)
+  try {
+    if (saved === "passage") await seedSavedPosition(f.page, navigationMessageId(1450))
+    if (saved === "latest bottom") await f.page.evaluate(`(async () => {
+      const { messageStoreBus } = await import('/src/stores/message-v2/bus.ts')
+      messageStoreBus.getOrCreate('navigation').setScrollSnapshot('s', 'message-stream', { scrollTop: 100, atBottom: true, followModeType: 'following', windowIsLatest: true })
+    })()`)
+    await f.page.evaluate(`(async () => {
+      const { messageStoreBus } = await import('/src/stores/message-v2/bus.ts')
+      const stop = messageStoreBus.onScrollSnapshotChanged((_instance, _session, _scope, snapshot) => {
+        if (snapshot.anchorKey !== ${JSON.stringify(navigationMessageId(250))}) return
+        stop()
+        queueMicrotask(() => document.querySelector('.history-navigation-status button').click())
+      })
+    })()`)
+    await clickTimeline(f.page, 250)
+    await f.page.waitForFunction(() => (window as any).fixture.snapshot().window?.kind === "history")
+    await f.page.locator(".history-navigation-status").waitFor({ state: "hidden" })
+    await f.page.evaluate(() => (window as any).fixture.releaseMessages())
+    if (saved === "passage") {
+      await assertPassageAtTop(f.page, 1450)
+      assert.equal((await snapshot(f.page)).scroll.anchorKey, navigationMessageId(1450))
+    } else {
+      await f.page.waitForFunction(() => {
+        const state = (window as any).fixture.snapshot()
+        const stream = document.querySelector(".message-stream")!
+        return state.window?.kind === "latest" && state.ids.includes("msg_01499")
+          && stream.scrollHeight - stream.clientHeight - stream.scrollTop <= 1
+      })
+      await waitFrames(f.page, 30)
+      const state = await snapshot(f.page)
+      assert.equal(state.window.kind, "latest", "the latest window must replace the cancelled one")
+      assert.ok(state.scroll.atBottom && state.scroll.windowIsLatest, `the stored position must be the latest bottom: ${JSON.stringify(state.scroll)}`)
+      assert.ok(await f.page.locator('.message-stream [data-virtual-follow-key="msg_01499"]').count(), "the latest message must be shown")
+    }
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// A restore loading its saved anchor positions the list itself: reaching the
+// bottom meanwhile must not page beyond the window that restore brings in.
+test("reaching the bottom while a restore loads its anchor does not page newer", async () => {
+  const f = await fixture()
+  try {
+    await f.page.evaluate(() => (window as any).fixture.switchAway())
+    await seedSavedPosition(f.page, navigationMessageId(250))
+    const release = f.hold(250)
+    await f.page.evaluate(() => (window as any).fixture.return())
+    await f.page.waitForFunction(() => document.querySelector(".message-stream [data-virtual-follow-key]"))
+    for (let i = 0; i < 100 && !f.windows.some(target => target.messageID === navigationMessageId(250)); i++) await waitFrames(f.page, 3)
+    const box = (await f.page.locator(".message-stream").boundingBox())!
+    await f.page.mouse.move(box.x + 60, box.y + box.height / 2)
+    // The anchor arrives about 500 ms later, while that downward intent is
+    // still fresh (600 ms), so its window swap is observed as reaching the bottom.
+    await f.page.mouse.wheel(0, 1000000)
+    await waitFrames(f.page, 30)
+    release()
+    await assertPassageAtTop(f.page, 250)
+    await waitFrames(f.page, 30)
+    assert.deepEqual(f.windows.map(target => target.messageID), [navigationMessageId(250)], "no newer page may be requested")
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// A gesture that cancels a pending jump over a visible list leaves the reader
+// in charge: the restore must not run again under it.
+test("a gesture cancelling a jump over a visible list does not rerun the restore", async () => {
+  const f = await fixture()
+  try {
+    await f.page.evaluate(() => (window as any).fixture.switchAway())
+    await seedSavedPosition(f.page, navigationMessageId(250))
+    const releaseSaved = f.hold(250)
+    await f.page.evaluate(() => (window as any).fixture.return())
+    await f.page.waitForFunction(() => document.querySelector(".message-stream [data-virtual-follow-key]"))
+    for (let i = 0; i < 100 && !f.windows.some(target => target.messageID === navigationMessageId(250)); i++) await waitFrames(f.page, 3)
+    const releaseJump = f.hold(900)
+    await clickTimeline(f.page, 900)
+    await f.page.locator(".history-navigation-status").waitFor()
+    const box = (await f.page.locator(".message-stream").boundingBox())!
+    await f.page.mouse.move(box.x + 60, box.y + box.height / 2)
+    await f.page.mouse.wheel(0, -300)
+    await f.page.locator(".history-navigation-status").waitFor({ state: "hidden" })
+    releaseJump()
+    releaseSaved()
+    await waitFrames(f.page, 60)
+    assert.deepEqual(f.windows.map(target => target.messageID), [navigationMessageId(250), navigationMessageId(900)], "the restore must not run again")
+    assert.ok(!(await snapshot(f.page)).ids.includes(navigationMessageId(250)), "the reader must stay on the visible list")
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// A restore still loading its saved anchor yields to paging the reader starts:
+// the late anchor never moves the paged passage.
+test("paging supersedes a restore that is loading its anchor", async () => {
+  const f = await fixture()
+  try {
+    await f.page.evaluate(() => (window as any).fixture.switchAway())
+    await seedSavedPosition(f.page, navigationMessageId(250))
+    const release = f.hold(250)
+    await f.page.evaluate(() => (window as any).fixture.return())
+    await f.page.waitForFunction(() => document.querySelector(".message-stream"))
+    await clickTimeline(f.page, 900)
+    await assertPassageAtTop(f.page, 900)
+    release()
+    await waitFrames(f.page, 60)
+    assert.ok(Math.abs((await rowOffset(f.page, 900))!) < 2, "the late restore anchor moved the paged passage")
+    assert((await snapshot(f.page)).ids.includes(navigationMessageId(900)))
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+/** Unmounts the session in the first frame where `index` reaches the top, while its page load still owns the position. */
+const switchAwayWhenAtTop = (page: Page, index: number) => page.evaluate(`new Promise(resolve => {
+  const next = () => {
+    const stream = document.querySelector('.message-stream')
+    const row = stream?.querySelector('[data-virtual-follow-key="${navigationMessageId(index)}"]')
+    if (row && Math.abs(row.getBoundingClientRect().top - stream.getBoundingClientRect().top) < 2) {
+      window.fixture.switchAway()
+      resolve()
+    } else requestAnimationFrame(next)
+  }
+  requestAnimationFrame(next)
+})`)
+
+// Unmounting while a page load still owns a list it has positioned (or one
+// awaiting an older page) must store where the reader is, not the position
+// held before the load under the new window's cursor.
+for (const via of ["timeline", "search"] as const) test(`unmounting right after a far ${via} jump lands stores the destination`, async () => {
+  const f = await fixture()
+  try {
+    if (via === "search") {
+      await f.page.route("**/session-history/query", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        status: "page", scanned: 1500, tools: 0, reasoning: 0, skipped: 0, candidates: [], cursor: null,
+        hits: [{ sessionID: "s", messageID: navigationMessageId(250), role: "user", partIndex: 0, kind: "text", excerpt: "Passage 250" }],
+      }) }))
+      await f.page.evaluate(() => (window as any).fixture.openSearch())
+      await f.page.getByRole("searchbox").fill("Passage")
+      await f.page.locator(".history-search-result").first().waitFor()
+      const landed = switchAwayWhenAtTop(f.page, 250)
+      await f.page.locator(".history-search-result").first().click()
+      await landed
+    } else {
+      const landed = switchAwayWhenAtTop(f.page, 250)
+      await clickTimeline(f.page, 250)
+      await landed
+    }
+    assert.equal((await snapshot(f.page)).scroll.anchorKey, navigationMessageId(250))
+    await f.page.evaluate(() => (window as any).fixture.return())
+    await assertPassageAtTop(f.page, 250)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+test("unmounting during a held older page stores the reader's position", async () => {
+  const f = await fixture()
+  try {
+    await f.page.evaluate(() => (window as any).fixture.holdNextList())
+    const box = (await f.page.locator(".message-stream").boundingBox())!
+    await f.page.mouse.move(box.x + 60, box.y + box.height / 2)
+    await f.page.mouse.wheel(0, -1000000)
+    // The older page is a native list read: it must be the held request.
+    await f.page.waitForFunction(() => (window as any).fixture.listPending(), undefined, { timeout: 5000 })
+    await waitFrames(f.page, 30)
+    assert.ok(await f.page.evaluate(() => (window as any).fixture.listPending()), "the older page must still be held")
+    assert.ok(Math.abs((await rowOffset(f.page, 1300))!) < 2, "the reader must be at the top of the latest page")
+    await f.page.evaluate(() => (window as any).fixture.switchAway())
+    assert.equal((await snapshot(f.page)).scroll.anchorKey, navigationMessageId(1300))
+    await f.page.evaluate(() => (window as any).fixture.releaseList())
+    await waitFrames(f.page, 30)
+    await f.page.evaluate(() => (window as any).fixture.return())
+    await assertPassageAtTop(f.page, 1300)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// A resident placement supersedes an unpositioned jump that was itself
+// superseding the restore: the placement owns the position, so the restore
+// must not run again and move the reader back to the saved passage.
+test("a resident placement after an unpositioned jump is not overridden by the restore", async () => {
+  const f = await fixture()
+  try {
+    await f.page.evaluate(() => (window as any).fixture.switchAway())
+    await seedSavedPosition(f.page, navigationMessageId(250))
+    const releaseSaved = f.hold(250)
+    await f.page.evaluate(() => (window as any).fixture.return())
+    await f.page.waitForFunction(() => document.querySelector(".message-stream"))
+    for (let i = 0; i < 100 && !f.windows.some(target => target.messageID === navigationMessageId(250)); i++) await waitFrames(f.page, 3)
+    const releaseJump = f.hold(900)
+    await clickTimeline(f.page, 900)
+    await f.page.locator(".history-navigation-status").waitFor()
+    await clickTimeline(f.page, 1400)
+    releaseJump()
+    releaseSaved()
+    await assertPassageAtTop(f.page, 1400)
+    await waitFrames(f.page, 30)
+    assert.ok(Math.abs((await rowOffset(f.page, 1400))!) < 2, "the restore moved the placed passage")
+    assert.deepEqual(f.windows.map(target => target.messageID), [navigationMessageId(250), navigationMessageId(900)], "the restore must not run again")
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// Only a search navigation reveals its occurrence. A non-resident result that
+// the reader pages into view by scrolling leaves the reader where paging put it.
+test("a search result made resident by manual paging does not pull the reader", async () => {
+  const f = await fixture()
+  try {
+    await f.page.route("**/session-history/query", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      status: "page", scanned: 1500, tools: 0, reasoning: 0, skipped: 0, candidates: [], cursor: null,
+      hits: [{ sessionID: "s", messageID: navigationMessageId(1290), role: "user", partIndex: 0, kind: "text", excerpt: "Passage 1290" }],
+    }) }))
+    await f.page.evaluate(() => (window as any).fixture.openSearch())
+    await f.page.getByRole("searchbox").fill("Passage")
+    await f.page.locator(".history-search-result").first().waitFor()
+    await waitFrames(f.page)
+    const box = (await f.page.locator(".message-stream").boundingBox())!
+    await f.page.mouse.move(box.x + 60, box.y + box.height / 2)
+    await f.page.mouse.wheel(0, -1000000)
+    await f.page.waitForFunction(() => (window as any).fixture.snapshot().ids.includes("msg_01290"))
+    await waitFrames(f.page, 90)
+    assert.ok(await rowOffset(f.page, 1290) !== null, "the active result must be mounted")
+    const gap = await f.page.locator(".message-stream").evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)
+    assert.ok(gap <= 1, `an older page is entered at its bottom; the mounted result pulled the reader ${gap}px away`)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+/** Deep fixture positioned on 1300 with search open and `Deepword<index>` hits routed. */
+async function deepSearch(index: number) {
+  const f = await fixture(false, false, false, true)
+  await f.page.route("**/session-history/query", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({
+    status: "page", scanned: 1500, tools: 0, reasoning: 0, skipped: 0, candidates: [], cursor: null,
+    hits: [{ sessionID: "s", messageID: navigationMessageId(index), role: "assistant", partIndex: 0, kind: "text", excerpt: `Deepword${index}` }],
+  }) }))
+  await clickTimeline(f.page, 1300)
+  await assertPassageAtTop(f.page, 1300)
+  await f.page.evaluate(() => (window as any).fixture.openSearch())
+  return f
+}
+const assertOccurrenceVisible = async (page: Page, text: string) => {
+  const occurrence = await activeOccurrence(page)
+  assert.ok(occurrence && occurrence.text === text && occurrence.top >= 0 && occurrence.bottom <= occurrence.viewport,
+    `the highlighted occurrence must be visible: ${JSON.stringify(occurrence)}`)
+}
+
+// A search navigation places its message at the top, then reveals an
+// occurrence that placement leaves out of view, through the list's held
+// alignment rather than a one-frame write its placement would undo. The
+// virtualizer moves rows while a taller row below settles; the highlight
+// must survive those moves.
+for (const index of [1400, 600]) test(`a deep search occurrence is revealed and stays highlighted (${index === 1400 ? "resident" : "historical"})`, async () => {
+  const f = await deepSearch(index)
+  try {
+    // Once revealed, no frame may lose the active highlight to a row move.
+    await f.page.evaluate(`(() => {
+      const frames = window.highlightFrames = []
+      const sample = () => {
+        const range = [...(CSS.highlights.get('codenomad-search-active') ?? [])][0]
+        frames.push(range ? (range.collapsed ? 'collapsed' : range.toString()) : 'none')
+        if (frames.length < 400) requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    })()`)
+    await f.page.getByRole("searchbox").fill(`Deepword${index}`)
+    // A resident first result is located automatically; a historical one on selection.
+    if (index === 600) await f.page.locator(".history-search-result").first().click()
+    await f.page.waitForFunction(id => (window as any).fixture.snapshot().ids.includes(id), navigationMessageId(index))
+    await waitFrames(f.page, 90)
+    await assertOccurrenceVisible(f.page, `Deepword${index}`)
+    await waitFrames(f.page, 60)
+    await assertOccurrenceVisible(f.page, `Deepword${index}`)
+    const sampled: string[] = await f.page.evaluate("window.highlightFrames")
+    const lost = sampled.slice(sampled.indexOf(`Deepword${index}`)).filter(frame => frame !== `Deepword${index}`)
+    assert.deepEqual(lost, [], `the active highlight was lost in ${lost.length} frame(s)`)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// Selecting the same result again reveals it again; a gesture made before the
+// reveal's frame claims it, so the reader is never pulled.
+for (const gesture of [false, true]) test(`re-selecting a deep result ${gesture ? "with an immediate gesture leaves the reader in place" : "reveals it again"}`, async () => {
+  const f = await deepSearch(1400)
+  const aligned: string[] = []
+  f.page.on("console", message => { if (/scroll (?:%c)?write .*"reason":"align-element"/.test(message.text())) aligned.push(message.text()) })
+  try {
+    await f.page.getByRole("searchbox").fill("Deepword1400")
+    await f.page.locator(".history-search-result").first().waitFor()
+    await waitFrames(f.page, 90)
+    await clickTimeline(f.page, 1300)
+    await assertPassageAtTop(f.page, 1300)
+    await f.page.evaluate(() => (window as any).codenomadLogger.enableLogger("scroll"))
+    await f.page.evaluate(`(() => {
+      document.querySelector('.history-search-result').click()
+      if (${gesture}) document.querySelector('.message-stream').dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }))
+    })()`)
+    await waitFrames(f.page, 90)
+    await f.page.evaluate(() => (window as any).codenomadLogger.disableLogger("scroll"))
+    if (gesture) assert.deepEqual(aligned, [], "a claimed reveal must not align the transcript")
+    else {
+      assert.ok(aligned.length > 0, "the re-selection must reveal through the list")
+      await assertOccurrenceVisible(f.page, "Deepword1400")
+    }
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+// A shallow occurrence is already visible once its message is at the top.
+test("a shallow search result lands at the top with its occurrence visible", async () => {
+  const f = await fixture()
+  try {
+    await f.page.route("**/session-history/query", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      status: "page", scanned: 1500, tools: 0, reasoning: 0, skipped: 0, candidates: [], cursor: null,
+      hits: [{ sessionID: "s", messageID: navigationMessageId(900), role: "user", partIndex: 0, kind: "text", excerpt: "Passage 900" }],
+    }) }))
+    await f.page.evaluate(() => (window as any).fixture.openSearch())
+    await f.page.getByRole("searchbox").fill("Passage")
+    await f.page.locator(".history-search-result").first().click()
+    await assertPassageAtTop(f.page, 900)
+    const occurrence = await activeOccurrence(f.page)
+    assert.ok(occurrence && occurrence.top >= 0 && occurrence.bottom <= occurrence.viewport, `the occurrence must be visible: ${JSON.stringify(occurrence)}`)
+    assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })
 

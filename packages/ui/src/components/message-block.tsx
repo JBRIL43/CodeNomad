@@ -23,7 +23,8 @@ import { useSpeech } from "../lib/hooks/use-speech"
 import { createFollowScroll } from "../lib/follow-scroll"
 import { formatElapsedClock, inferReasoningDurationMs } from "../lib/message-timing"
 import type { SessionSearchMatch } from "../lib/session-search"
-import { applySearchHighlights, clearSearchHighlights } from "./search-highlights"
+import { applySearchHighlights, clearSearchHighlights, type SearchRevealRequest } from "./search-highlights"
+import type { AlignInTranscript } from "./search-highlight-ranges"
 import type { ActionOverflowMenuItem } from "./action-overflow-menu"
 import { copyToClipboard } from "../lib/clipboard"
 import SpeechActionButton from "./speech-action-button"
@@ -521,6 +522,8 @@ interface MessageBlockProps {
   searchQuery?: Accessor<string>
   searchResultMessageIds?: Accessor<Set<string>>
   activeSearchMatch?: Accessor<SessionSearchMatch | null>
+  /** The navigation's one-shot reveal of the active occurrence; mounting alone never reveals. */
+  searchReveal?: Accessor<SearchRevealRequest | null>
   pendingFormToolTargets?: Accessor<ReadonlySet<string>>
   technicalGroupForPart?: (messageId: string, partId: string) => TranscriptTechnicalGroup | undefined
   technicalGroupingSignature?: Accessor<string>
@@ -529,8 +532,11 @@ interface MessageBlockProps {
   onTechnicalCleanupHoverChange?: (messageId: string, partId: string, hovered: boolean) => void
   isTechnicalGroupExpanded?: (groupId: string, defaultExpanded: boolean) => boolean
   setTechnicalGroupExpanded?: (groupId: string, expanded: boolean) => void
-  /** Leaves bottom-following and holds `target` `viewportOffset` px below the transcript top. */
-  alignRevealedParts?: (target: HTMLElement, viewportOffset: number) => void
+  /**
+   * Leaves bottom-following and holds `target` `viewportOffset` px below the
+   * transcript top; used by hidden-part and search-occurrence reveals.
+   */
+  alignInTranscript?: AlignInTranscript
 }
 
 export default function MessageBlock(props: MessageBlockProps) {
@@ -555,7 +561,6 @@ export default function MessageBlock(props: MessageBlockProps) {
     })))
   const pendingFormToolTargets = () => props.pendingFormToolTargets?.() ?? localPendingFormToolTargets()
   const technicalCleanupPartKeys = () => props.technicalCleanupPartKeys?.() ?? new Set<string>()
-  let lastInlineScrolledSearchMatchId: string | null = null
   const handleContentRendered = () => {
     props.onContentRendered?.()
     accountSessionTranscript(props.instanceId, props.sessionId)
@@ -568,14 +573,14 @@ export default function MessageBlock(props: MessageBlockProps) {
     systemDisclosureRevision()
     const active = activeSearchMatch()
     const relevantActiveMatch = active?.messageId === props.messageId ? active : null
-    const shouldScrollActive = Boolean(relevantActiveMatch && relevantActiveMatch.id !== lastInlineScrolledSearchMatchId)
+    const request = props.searchReveal?.()
+    const reveal = relevantActiveMatch && request?.matchId === relevantActiveMatch.id ? request : undefined
     const current = record()
     if (current) void current.revision
     const element = blockRef()
     if (!element) return
-    if (shouldScrollActive && relevantActiveMatch) lastInlineScrolledSearchMatchId = relevantActiveMatch.id
 
-    const frame = requestAnimationFrame(() => applySearchHighlights(element, query, relevantActiveMatch, shouldScrollActive))
+    const frame = requestAnimationFrame(() => applySearchHighlights(element, query, relevantActiveMatch, reveal, props.alignInTranscript))
     onCleanup(() => {
       cancelAnimationFrame(frame)
       clearSearchHighlights(element)
@@ -902,7 +907,7 @@ export default function MessageBlock(props: MessageBlockProps) {
       // The virtualizer and bottom-following keep the message end fixed while a partly
       // scrolled row grows, which can push the revealed parts far above the viewport.
       if (revealPoint && stream?.isConnected) {
-        props.alignRevealedParts?.(revealPoint, activationTop - stream.getBoundingClientRect().top)
+        props.alignInTranscript?.(revealPoint, activationTop - stream.getBoundingClientRect().top)
       }
       if (!hadFocus) return
       // Respect focus moved elsewhere meanwhile. The clicked button may stay mounted when
