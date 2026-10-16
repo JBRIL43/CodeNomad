@@ -121,7 +121,7 @@ compensation, browser clamping, search-result reveals and the pre-registration
 timeline `scrollIntoView` fallback.
 
 Search reveals keep their one-shot occurrence centering through nested scrollers
-(not a 30-frame element-alignment pin). They emit `writer: "external"` with reason
+(not an element-alignment hold). They emit `writer: "external"` with reason
 `search-reveal`; the pre-registration native smooth fallback emits
 `timeline-fallback`. Neither changes the list's programmatic marking. SessionView's
 activation/submission handles and MessageSection's paging, restoration and message
@@ -160,6 +160,35 @@ restoration, alignment and bottom pins through one function; deactivation, sessi
 reset and unmount stop every list-owned positioning operation (including a
 restoration in flight) through another, and deactivation also releases Virtua's
 queued imperative scroll.
+
+One bottom loop (`bottomPin`) keeps the bottom, and only while following: leaving
+follow ends it. Ordinary following re-pins for two frames after each bottom write;
+an explicit pin (send intent, latest paging, restoration at the bottom) lasts until
+enough rows exist and the bottom stays put, within a frame deadline, then hands the
+bottom back to ordinary following. Layout changes apply restoration, then an explicit
+pin, then the long-reply hold, then follow. A restoration requested during a pin
+supersedes it (the pin settles `interrupted`), except that a restoration to the
+bottom joins an active explicit pin and keeps its row count; it reports `onApplied`
+only after its own landing, and `onCancelled` when superseded or when its pin loses
+follow without a gesture. A new send intent also cancels MessageSection's pending
+window paging, which would otherwise leave follow after the send.
+
+In-place reveals (`alignElement`) are reader-settlement holds on the revealed
+element, with the former element alignment's lifetime: the element is measured and
+re-aligned on every frame of a fixed 30-frame window counted from the request, which
+layout never extends. Within it, viewport and `beforeItems` resizes re-align the
+element instead of dropping it, and its requested offset is kept and clamped into
+the current viewport only when applied. Gestures, navigation and focus moving to
+another element inside the transcript scroller (Tab, assistive technology) end it at
+once, and so does losing the element (an unmounted row); focus leaving the
+transcript (e.g. to the composer) does not. Any other scroll during the window is
+corrected like layout, as before. While a hold is active, a window shift retains the
+hold rather than the visible top anchor, so no reader stays retained after it
+expires. Settlement, alignment and anchor restoration share one anchor measurement.
+Pre-existing: a Virtua index request still pending from an earlier key navigation
+re-runs on every measurement while they keep coming (for instance during streaming)
+and can re-place its row; a gesture, another index navigation, a restoration or
+deactivation replaces it.
 
 Browser checks load the complete stylesheet and cover overflow, hover, keyboard
 focus, RTL and 125% zoom, mixed text/tool/idle records, actual native thumb dragging,
