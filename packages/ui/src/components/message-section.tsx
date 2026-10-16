@@ -555,8 +555,8 @@ export default function MessageSection(props: MessageSectionProps) {
     const canCapture = canCaptureScrollSnapshot({ requireActive: options?.requireActive })
     if (allowCapture && canCapture) {
       const captured = options?.snapshot ?? listApi()?.captureScrollSnapshot()
-      // Only the bottom or an anchored row identifies the reader. A capture with
-      // neither (rows already torn down at unmount) keeps the last good position.
+      // Only the bottom or an anchored row identifies the reader; otherwise keep
+      // the last good position.
       const snapshot = captured && (captured.atBottom || captured.anchorKey !== undefined) ? overlayWindowOnSnapshot(captured) : undefined
       if (snapshot) {
         setLastGoodScrollSnapshot(sessionId, snapshot)
@@ -583,8 +583,44 @@ export default function MessageSection(props: MessageSectionProps) {
 
   }
 
+  // A scroll persists once Virtua reports it settled, not on every event. An
+  // unsettled position is still recorded on unmount by the cleanup below (an
+  // inactive SessionView unmounts this section before hiding it) and by a
+  // state capture's flush.
+  let scrollUnsettled = false
+  function persistScroll() {
+    scrollUnsettled = false
+    persistMessageScrollSnapshot()
+  }
+  function persistSettledScroll() {
+    if (scrollUnsettled) persistScroll()
+  }
+  onCleanup(messageStoreBus.onScrollSnapshotFlush(persistSettledScroll))
+  // A pinned stream keeps scrolling, so it never settles: persist a follow-mode
+  // change rather than wait for the stream to pause. A gesture resumes follow
+  // before its scroll lands, so a resume persists once the reader is at the
+  // bottom; earlier, the snapshot would restore as escaped.
+  let followResumePending = false
+  function persistFollowResume() {
+    const snapshot = listApi()?.captureScrollSnapshot()
+    if (!snapshot?.atBottom) return
+    followResumePending = false
+    scrollUnsettled = false
+    persistMessageScrollSnapshot({ snapshot })
+  }
+  createEffect(on(() => listState()?.autoScroll(), (following, previous) => {
+    if (following === undefined || previous === undefined) return
+    followResumePending = following
+    if (following) persistFollowResume()
+    else persistScroll()
+  }, { defer: true }))
+
   // Persist scroll position when switching sessions. This effect's cleanup runs
   // when `props.sessionId` changes, before the next session is rendered.
+  // Production sections are keyed per session: only the loading placeholder
+  // changes session, and it never persists (loading keeps its navigation
+  // unrestored). A retained section whose session changes after an unsettled
+  // scroll would keep its last settled position.
   createEffect(() => {
     const sessionId = props.sessionId
     onCleanup(() => {
@@ -1250,10 +1286,12 @@ export default function MessageSection(props: MessageSectionProps) {
             const candidates = Array.from(itemWrapper.querySelectorAll<HTMLElement>(`.message-item-base[data-message-id="${key}"][data-message-role="assistant"][data-assistant-text-block="true"]`))
             return candidates[candidates.length - 1] ?? null
           }}
-          onScroll={(snapshot) => {
+          onScroll={() => {
             clearQuoteSelection()
-            persistMessageScrollSnapshot({ snapshot })
+            scrollUnsettled = true
+            if (followResumePending) persistFollowResume()
           }}
+          onScrollEnd={persistSettledScroll}
           onUserReachedTop={() => { void pageWindow("older", (api) => api.scrollToBottom({ immediate: true })) }}
           onScrollIntent={(direction) => {
             setRevealActiveToken(value => value + 1)

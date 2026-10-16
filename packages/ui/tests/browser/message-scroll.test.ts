@@ -95,9 +95,15 @@ async function bottom(page: Page, scope = "") {
   await frames(page)
 }
 
+// The store records a scroll once it settles (a pinned stream keeps scrolling);
+// flush to read the position a state capture would persist now.
 async function readerState(page: Page, scope = "") {
   const gap = await page.locator(`${scope} .message-stream`).evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
-  const followModeType = await page.evaluate(() => (window as any).fixture.snapshot().scroll.followModeType)
+  const followModeType = await page.evaluate(async () => {
+    const { messageStoreBus } = await import("/src/stores/message-v2/bus.ts" as any)
+    messageStoreBus.flushScrollSnapshots()
+    return (window as any).fixture.snapshot().scroll.followModeType
+  })
   return { gap, followModeType, latestButton: await latestButton(page, scope).count() }
 }
 
@@ -323,6 +329,10 @@ for (const [gesture, zoom] of [["wheel 600", 1], ["wheel 5000", 1], ["wheel 600"
     else await page.mouse.wheel(0, gesture === "wheel 600" ? 600 : 5000)
     await pump
     await frames(page, 10)
+    // The pinned stream never settles: resuming follow is persisted without a
+    // flush, once at the bottom, so it restores as following.
+    const resumed = await page.evaluate(() => (window as any).fixture.snapshot().scroll)
+    assert.deepEqual({ followModeType: resumed.followModeType, atBottom: resumed.atBottom }, { followModeType: "following", atBottom: true }, JSON.stringify(resumed))
     const state = await readerState(page)
     assert.deepEqual({ followModeType: state.followModeType, latestButton: state.latestButton }, { followModeType: "following", latestButton: 0 }, JSON.stringify(state))
     assert.ok(state.gap <= 2, `The resumed reader must stay at the streaming tail: ${state.gap}px`)
@@ -457,6 +467,62 @@ for (const reader of ["manual-32", "following"] as const) for (const transition 
     assert.deepEqual({ followModeType: after.followModeType, latestButton: after.latestButton }, expected, JSON.stringify({ before, after }))
     assert.ok(Math.abs(after.gap - before.gap) < 2, `Reader moved from ${before.gap}px to ${after.gap}px above the bottom`)
     if (reader === "following") assert.ok(after.gap <= 1, `Following reader left the bottom: ${after.gap}px`)
+  }, { name: transition === "switch" ? "switch" : "session" })
+})
+
+// Scrolling persists once settled, without a flush; a session switch or unmount
+// (both unmount the section) or a state-capture flush before then records the
+// reached position, anchored on the row then at the top of the viewport.
+for (const transition of ["switch", "unmount", "flush"] as const) test(`an unsettled scroll is persisted on ${transition}`, async () => {
+  const scope = transition === "switch" ? '[data-session-id="A"]' : ""
+  // Live reader position: top-row anchor (as selectTopViewportAnchor picks it) and bottom gap.
+  const live = (scope: string) => {
+    const stream = document.querySelector(`${scope} .message-stream`)!, top = stream.getBoundingClientRect().top
+    const rows = Array.from(stream.querySelectorAll<HTMLElement>("[data-virtual-follow-key]"), row => {
+      const rect = row.getBoundingClientRect()
+      return { key: row.dataset.virtualFollowKey!, top: rect.top - top, bottom: rect.bottom - top }
+    }).filter(row => row.bottom > 0 && row.top < stream.clientHeight)
+    const anchor = rows.filter(row => row.top <= 0).sort((a, b) => b.top - a.top)[0] ?? rows.sort((a, b) => a.top - b.top)[0]
+    return { scrollTop: stream.scrollTop, gap: stream.scrollHeight - stream.clientHeight - stream.scrollTop, anchorKey: anchor?.key, anchorOffset: anchor?.top }
+  }
+  const assertAnchored = (persisted: any, reached: ReturnType<typeof live>) => {
+    assert.ok(Math.abs(persisted.scrollTop - reached.scrollTop) <= 1, JSON.stringify({ persisted, reached }))
+    assert.equal(persisted.anchorKey, reached.anchorKey, JSON.stringify({ persisted, reached }))
+    assert.ok(Math.abs(persisted.anchorOffset - reached.anchorOffset!) <= 2, JSON.stringify({ persisted, reached }))
+  }
+  await open(async page => {
+    await page.evaluate(scope => document.querySelector(`${scope} .message-stream`)!.addEventListener("scroll", () => { (window as any).lastScrollAt = Date.now() }, { passive: true }), scope)
+    await page.locator(`${scope} .message-stream`).hover()
+    await page.mouse.wheel(0, -900)
+    // Settles without a flush: wait for a write after the last scroll event,
+    // not a frame count.
+    await page.waitForFunction(`window.fixture.snapshot().scroll.updatedAt > window.lastScrollAt
+      && Math.abs(window.fixture.snapshot().scroll.scrollTop - document.querySelector(${JSON.stringify(`${scope} .message-stream`)}).scrollTop) <= 1`, undefined, { timeout: 3000 })
+    const settled = await page.evaluate(`({ persisted: window.fixture.snapshot().scroll, reached: (${live})(${JSON.stringify(scope)}) })`) as any
+    assertAnchored(settled.persisted, settled.reached)
+    // Scroll again and transition in the scroll event's task, before the
+    // scroll-end timer can fire, whatever the load.
+    const result = await page.evaluate(`(async () => {
+      const fixture = window.fixture
+      const { messageStoreBus } = await import("/src/stores/message-v2/bus.ts")
+      const stream = document.querySelector(${JSON.stringify(`${scope} .message-stream`)})
+      await new Promise(resolve => { stream.addEventListener("scroll", resolve, { once: true }); stream.scrollTop -= 600 })
+      const reached = (${live})(${JSON.stringify(scope)})
+      const pending = fixture.snapshot().scroll.scrollTop
+      if (${JSON.stringify(transition)} === "switch") fixture.switchTo("B")
+      else if (${JSON.stringify(transition)} === "unmount") fixture.switchAway()
+      else messageStoreBus.flushScrollSnapshots()
+      return { reached, pending, persisted: fixture.snapshot().scroll }
+    })()`) as any
+    assert.ok(Math.abs(result.pending - result.reached.scrollTop) > 100, `The scroll had already settled: ${JSON.stringify(result)}`)
+    assertAnchored(result.persisted, result.reached)
+    assert.equal(result.persisted.followModeType, "escaped")
+    if (transition === "flush") return
+    await frames(page, 30)
+    await page.evaluate(transition => transition === "switch" ? (window as any).fixture.switchTo("A") : (window as any).fixture.return(), transition)
+    await frames(page, 90)
+    const restored = await page.evaluate(`(${live})(${JSON.stringify(scope)})`) as any
+    assert.ok(Math.abs(restored.gap - result.reached.gap) <= 2, `Returned ${restored.gap}px above the bottom, left at ${result.reached.gap}px`)
   }, { name: transition === "switch" ? "switch" : "session" })
 })
 
@@ -621,7 +687,7 @@ async function streamUntilHold(page: Page, scope: string) {
     held = await stream.getAttribute("data-follow-mode") === "escaped"
   }
   assert.ok(held, "A long streamed reply must engage the hold")
-  // The hold scrolls nothing, so it must publish the held position itself.
+  // The hold scrolls nothing; the section persists it as a follow-mode change.
   assert.equal(await page.evaluate(() => (window as any).fixture.snapshot().scroll.followModeType), "escaped", "The hold must persist its escaped position")
   for (let i = 0; i < 20; i++) {
     await page.evaluate(() => (window as any).fixture.delta("A", "After hold.\n\n"))
