@@ -74,6 +74,21 @@ results navigate to a bounded transcript window around the selected message.
 Other-session results fetch only that native message into a separate preview.
 Resident matches scroll to their existing row without a network read.
 
+Workspace results group consecutive hits by session. Each group names its
+conversation and the worktree (label, normally its branch) that currently holds
+the session's native location; hits carry no commit, since a message is not
+bound to one. Titles and locations come from the session store, or from one
+`session.get` per distinct unloaded session (older catalog pages, collapsed
+subsessions), at most four in flight. These display reads never add sessions
+to the list. Queued reads follow the visible results: a new query or page drops
+sessions it no longer shows, session scope and closing abort them, and a
+reconnect discards resolved labels. Only a not-found session is labelled
+unavailable; other read failures retry on the next result update. The
+preview's "Open in session" hydrates only that session and its parents, stores
+the hit as its transcript anchor, selects it and returns its central surface to
+chat, so the destination restores the bounded window around the message
+through its normal anchor path.
+
 ## Cleanup semantics
 
 Planning returns compact message IDs, content hashes and technical-part counts;
