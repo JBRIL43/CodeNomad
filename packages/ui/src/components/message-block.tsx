@@ -21,7 +21,7 @@ import { useI18n, type I18nContextValue } from "../lib/i18n"
 import { hotkeyLabel } from "../lib/hotkeys"
 import { useSpeech } from "../lib/hooks/use-speech"
 import { createFollowScroll } from "../lib/follow-scroll"
-import { formatElapsedClock, getPartEndedAt, getPartStartedAt, inferReasoningDurationMs } from "../lib/message-timing"
+import { formatElapsedDuration, getPartEndedAt, getPartStartedAt, inferReasoningDurationMs } from "../lib/message-timing"
 import { PartDuration } from "./part-duration"
 import type { SessionSearchMatch } from "../lib/session-search"
 import { applySearchHighlights, clearSearchHighlights, type SearchRevealRequest } from "./search-highlights"
@@ -1586,9 +1586,10 @@ function reasoningDurationTitle(t: I18nContextValue["t"], durationMs?: number) {
   }
   const seconds = Math.max(1, Math.round(durationMs / 1000))
   if (seconds < 60) return t(`messageBlock.reasoning.thoughtFor.seconds.${seconds === 1 ? "one" : "other"}`, { count: String(seconds) })
-  const minutes = Math.max(1, Math.round(seconds / 60))
+  // Whole units elapsed, like the header duration ("1m 30s" → "1 minute").
+  const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return t(`messageBlock.reasoning.thoughtFor.minutes.${minutes === 1 ? "one" : "other"}`, { count: String(minutes) })
-  const hours = Math.max(1, Math.round(minutes / 60))
+  const hours = Math.floor(minutes / 60)
   return t(`messageBlock.reasoning.thoughtFor.hours.${hours === 1 ? "one" : "other"}`, { count: String(hours) })
 }
 
@@ -1691,7 +1692,7 @@ function ReasoningGroupCard(props: {
               · {t(`messageBlock.reasoning.steps.${summaryParts().length === 1 ? "one" : "other"}`, { count: String(summaryParts().length) })}
             </span>
             <Show when={totalDuration() > 0}>
-              <span class="message-technical-group-meta">· {formatElapsedClock(totalDuration(), locale())}</span>
+              <span class="message-technical-group-meta">· {formatElapsedDuration(totalDuration(), locale())}</span>
             </Show>
           </button>
           <Show when={!expanded() && canDeleteGroup()}>
@@ -1822,7 +1823,7 @@ function ReasoningCard(props: ReasoningCardProps) {
 
   const thoughtDurationTitle = () => reasoningDurationTitle(t, props.durationMs)
 
-  // The visible clock already shows the duration; "Thought for…" stays in the tooltip.
+  // The visible header duration already shows it; "Thought for…" stays in the tooltip.
   const reasoningTitle = () => extractedTitle() || t("messageBlock.reasoning.thoughtsFallback")
 
   const reasoningMetaTooltip = () => {

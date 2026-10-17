@@ -51,22 +51,34 @@ export function inferReasoningDurationMs(
   return getPartDurationMs(reasoningPart)
 }
 
-export function formatElapsedClock(durationMs?: number, locale?: string): string {
+/** A short, localized duration ("3s", "1m 5s", "1h 2m"), not a clock reading
+ * that could be mistaken for a time of day. While `live` (ticking), the trailing
+ * unit is always shown with two digits ("1m 05s", "2m 00s") so the width stays
+ * steady and the header layout does not shift every minute. */
+export function formatElapsedDuration(durationMs?: number, locale?: string, live = false): string {
   const safeDuration = getPositiveNumber(durationMs)
   if (!safeDuration) {
     return ""
   }
 
-  const formatNumber = (value: number, minimumIntegerDigits = 1) =>
-    new Intl.NumberFormat(locale, { minimumIntegerDigits, useGrouping: false }).format(value)
+  const formatUnit = (unit: "hour" | "minute" | "second", value: number, padded = false) =>
+    new Intl.NumberFormat(locale, {
+      style: "unit",
+      unit,
+      unitDisplay: "narrow",
+      useGrouping: false,
+      minimumIntegerDigits: padded ? 2 : 1,
+    }).format(value)
   const totalSeconds = Math.max(1, Math.round(safeDuration / 1000))
   const hours = Math.floor(totalSeconds / 3600)
   const minutes = Math.floor((totalSeconds % 3600) / 60)
   const seconds = totalSeconds % 60
 
   if (hours > 0) {
-    return `${formatNumber(hours)}:${formatNumber(minutes, 2)}:${formatNumber(seconds, 2)}`
+    return minutes || live ? `${formatUnit("hour", hours)} ${formatUnit("minute", minutes, live)}` : formatUnit("hour", hours)
   }
-
-  return `${formatNumber(minutes)}:${formatNumber(seconds, 2)}`
+  if (minutes > 0) {
+    return seconds || live ? `${formatUnit("minute", minutes)} ${formatUnit("second", seconds, live)}` : formatUnit("minute", minutes)
+  }
+  return formatUnit("second", seconds)
 }
