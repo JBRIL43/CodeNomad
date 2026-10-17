@@ -24,6 +24,8 @@ const makeMessage = location.search.includes("mixed") ? mixedNavigationMessage
 const model = { providerID: "fixture", id: "fixture" }
 const assistantId = "msg_streaming"
 let nativeLists = 0, time = 10000, live = "", streaming = false
+let steps = 0
+const prompts: string[] = []
 let listHold: Promise<void> | undefined, releaseListHold: (() => void) | undefined, listPending = false
 let releaseMessages!: () => void
 const messagesGate = new Promise<void>(resolve => { releaseMessages = resolve })
@@ -39,6 +41,8 @@ const client: any = {
   session: { active: async () => ({}), inbox: { list: async () => ({ data: [] }) },
     get: async () => ({ id: sessionId, title: "Long navigation", location: { directory: "/fixture" }, time: { created: 1, updated: 1 } }),
     instructions: { entry: { remove: async () => {}, put: async () => {} } },
+    switchAgent: async () => ({}), switchModel: async () => ({}),
+    prompt: async ({ id }: any) => { prompts.push(id); return {} },
   },
   model: { default: async () => ({ data: model }) },
   message: { list: async ({ cursor, limit = 200, order }: any = {}) => {
@@ -133,6 +137,25 @@ render(() => <ConfigProvider><I18nProvider><ThemeProvider><Show when={visible()}
     live += delta
     emit("session.text.delta", { assistantMessageID: assistantId, ordinal: 0, delta })
   },
+  /**
+   * Runs `count` agent steps, each a new assistant message rolling the oldest
+   * one out of the 200-message window. A `text` step answers before it ends;
+   * an `empty` step ends at once, which hides its message.
+   */
+  steps: (count: number, kind: "text" | "empty" = "text") => {
+    for (let index = 0; index < count; index++) {
+      const assistantMessageID = `msg_step_${String(++steps).padStart(4, "0")}`
+      emit("session.step.started", { assistantMessageID, agent: "build", model })
+      if (kind === "text") {
+        const text = `Step ${steps}\n\nA short agent step.`
+        emit("session.text.started", { assistantMessageID })
+        emit("session.text.delta", { assistantMessageID, ordinal: 0, delta: text })
+        emit("session.text.ended", { assistantMessageID, ordinal: 0, text })
+      }
+      emit("session.step.ended", { assistantMessageID, finish: "stop" })
+    }
+  },
+  prompts: () => prompts,
   snapshot: () => ({ nativeLists, ids: store.getSessionMessageIds(sessionId), window: store.getMessageWindow(sessionId),
     scroll: store.getScrollSnapshot(sessionId, "message-stream"), model: sessions().get(instanceId)?.get(sessionId)?.model }),
 }

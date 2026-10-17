@@ -12,10 +12,12 @@ const [tailHeight, setTailHeight] = createSignal(48)
 const [headHeight, setHeadHeight] = createSignal(48)
 const [rowHeights, setRowHeights] = createSignal<Record<string, number>>({})
 const [pinIntent, setPinIntent] = createSignal<VirtualExplicitBottomPinIntent | null>(null)
+const [beforeHeight, setBeforeHeight] = createSignal(0)
 let api: VirtualFollowListApi | undefined
 let snapshot: VirtualFollowScrollSnapshot | undefined
 let reachedTop = 0
 let pinCancelled = 0
+let steps = 0
 const rowHeight = (item: string) => rowHeights()[item] ?? (item === "streaming-tail" ? tailHeight() : item === "row-1" ? headHeight() : 48)
 render(() => <Show when={visible()}><VirtualFollowList items={items} getKey={item => item}
   initialAutoScroll={() => false} isActive={active}
@@ -26,12 +28,13 @@ render(() => <Show when={visible()}><VirtualFollowList items={items} getKey={ite
     if (snapshot) api.restoreScrollSnapshot(snapshot)
   }}
   renderItem={item => <div style={{ height: `${rowHeight(item)}px` }}>{item}</div>}
+  renderBeforeItems={() => <Show when={beforeHeight()}><div style={{ height: `${beforeHeight()}px` }} /></Show>}
 /></Show>, document.getElementById("root")!)
 ;(window as any).fixture = {
   bottom: () => api?.scrollToBottom({ immediate: true }),
   follow: () => { api?.scrollToBottom({ immediate: true }); api?.setAutoScroll(true) },
-  middle: () => api?.scrollToKey("row-100", { block: "start" }),
-  nearTail: () => api?.scrollToKey("row-180", { block: "start" }),
+  middle: () => api?.scrollToKey("row-100"),
+  nearTail: () => api?.scrollToKey("row-180"),
   align: (key = "row-180", offset = 8) => {
     const row = api?.getScrollElement()?.querySelector<HTMLElement>(`[data-virtual-follow-key="${key}"]`)
     if (row) api?.alignElement(row, offset)
@@ -41,8 +44,22 @@ render(() => <Show when={visible()}><VirtualFollowList items={items} getKey={ite
     // Metadata/inbox reprojection may publish the same IDs before settlement.
     queueMicrotask(() => setItems(current => current.slice()))
   },
+  // An agent step: a new reply joins the tail, the oldest row leaves the window.
+  step: () => {
+    const key = `step-${++steps}`
+    setItems(current => [...current.slice(1), key])
+    return key
+  },
+  // An empty agent step: its reply is hidden again once the step ends, a second
+  // (non-rolling) window change right after the roll.
+  emptyStep: () => {
+    const key = (window as any).fixture.step()
+    queueMicrotask(() => setItems(current => current.filter(item => item !== key)))
+  },
   growTail: setTailHeight,
   resizeHead: setHeadHeight,
+  // Content above the rows (SessionView's header and older-history controls).
+  resizeBefore: setBeforeHeight,
   resizeRow: (key: string, height: number) => setRowHeights(current => ({ ...current, [key]: height })),
   reorder: () => {
     setItems(current => [current[1], current[0], ...current.slice(2), "prompt"])
@@ -54,6 +71,8 @@ render(() => <Show when={visible()}><VirtualFollowList items={items} getKey={ite
   itemCount: () => items().length,
   switchAway: () => { snapshot = api?.captureScrollSnapshot(); setVisible(false) },
   return: () => setVisible(true),
+  // Hides the mounted list (display:none), unlike switchAway which unmounts it.
+  setHidden: (hidden: boolean) => { document.getElementById("root")!.style.display = hidden ? "none" : "flex" },
   deactivateDuringRestore: (target: VirtualFollowScrollSnapshot) => { api?.restoreScrollSnapshot(target); setActive(false) },
   activate: () => setActive(true),
   autoScroll: () => api?.getAutoScroll(),
