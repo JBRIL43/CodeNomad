@@ -18,7 +18,7 @@ import { registerAutomationPluginRoute } from "../../server/routes/automation-pl
 import { registerInstanceProxyRoutes } from "../../server/http-server"
 import { WorktreeDeletionFence } from "../../workspaces/worktree-session-evacuation"
 import type { NativeDecisionEvidenceRequest } from "../../missions/native-human-evidence"
-import { acquireNativeHumanAnswers } from "./native-human-answer"
+import { acquireNativeHumanAnswers, nativeHumanAnswerGate } from "./native-human-answer"
 import { attachRemoteDevice, markRemoteSocket } from "../../remote-control/request-origin"
 
 const encode = (key: string) => `plugin:${Array.from("codenomad.missions").map(c => c.charCodeAt(0).toString(16).padStart(4, "0")).join("")}:${key}`
@@ -239,6 +239,52 @@ test("Wayfinder without a published binding accepts only the exact fresh assignm
     await assert.rejects(control.report("ses_root", report({ ...provenance.nativeCall, parentSessionID: "ses_other" })), /invocation unavailable/)
     assert.equal((await control.report("ses_root", report())).disposition, "reported")
     assert.equal((await control.snapshot()).missions[0].tasks[0].status, "completed")
+  } finally { await f.dispose() }
+})
+
+test("a decision readout discovers the human's exact answer from native structure, then the gate verifies it", async () => {
+  const f = await fixture()
+  try {
+    f.db.exec("DELETE FROM event")
+    const control = new MissionControl({ storage: f.storage, project: { id: "project", canonical: f.directory, location: { directory: f.directory } },
+      sessions: { get: f.nativeGet, create: async () => { throw new Error("No ghost root") }, prompt: async () => {}, synthetic: async () => {} },
+      humanGate: nativeHumanAnswerGate(use => use(f.native)) })
+    const made = await control.create({ requestID: "wayfinder-discovered", objective: "Choose the seam", template: "wayfinder", coordinatorSessionID: "ses_root" })
+    await new MissionJournal(f.storage, "project", f.directory).append({ version: 1, id: "decision_created", type: "task.created", missionID: made.mission.id,
+      projectID: "project", createdAt: made.mission.createdAt + 1, task: { id: "tsk_decision", key: "decision", title: "Decision", brief: "Ask the human",
+        role: "decision", executionMode: { kind: "native", parentTaskKey: null }, blockedBy: [] } })
+    const mission = (await control.snapshot()).missions[0], assignment = buildAssignmentPrompt(mission, mission.tasks[0])
+    const delegate = (prompt: string) => f.db.prepare("UPDATE session_message SET data=? WHERE id='msg_delegate'").run(JSON.stringify({ content: [
+      { type: "tool", name: "subagent", id: "call_delegate", executed: false, state: { status: "running", input: { prompt }, metadata: { sessionID: "ses_child" } } }] }))
+    delegate(assignment)
+    const candidates = () => control.decisionCandidates("ses_root", mission.id, "decision")
+    const readout = { taskKey: "decision", outcome: "completed" as const, summary: "The human chose the module seam", evidence: [], next: [], final: false }
+    assert.deepEqual(await candidates(), { candidates: [], complete: true }, "no UI mark yet")
+    await assert.rejects(control.report("ses_root", readout), /Human decision required/)
+    assert.equal((await f.submit()).statusCode, 204)
+    delegate("Unrelated work")
+    assert.deepEqual(await candidates(), { candidates: [], complete: true }, "a child born for other work never qualifies")
+    delegate(assignment)
+    const discovery = (await candidates())!
+    assert.equal(discovery.complete, true)
+    const [found, ...others] = discovery.candidates
+    assert.deepEqual(others, [])
+    assert.deepEqual(found, { question: "Choose the seam?", answer: "Module", artifact: { kind: "decision", question: "Choose the seam?", answer: "Module",
+      provenance: { kind: "native-form-answer", contract: { missionID: mission.id, taskKey: "decision", generation: 1 },
+        nativeCall: { generation: 1, parentSessionID: "ses_root", parentMessageID: "msg_delegate", toolCallID: "call_delegate" },
+        sessionID: "ses_child", formID: f.form.id, messageID: "msg_question", toolCallID: "call_question", fieldKey: "q0" } } })
+    // An unreadable confirmed mark cannot be excluded: the visible answer is listed but never auto-chosen.
+    f.put(f.markKey.replace(f.form.id, "frm_broken"), { state: "confirmed", via: "ui", sessionID: "ses_child", answer: { q0: "Adapter" }, form: { invalid: true } })
+    assert.deepEqual(await candidates(), { candidates: [found], complete: false })
+    await assert.rejects(control.report("ses_root", readout), /Not every answered question could be checked/)
+    f.db.prepare("DELETE FROM kv WHERE key LIKE ?").run("%frm_broken")
+    // A confirmed answer the gate cannot verify (here: the native Form now disagrees) leaves the discovery incomplete.
+    f.changeState("cancelled")
+    assert.deepEqual(await candidates(), { candidates: [], complete: false })
+    await assert.rejects(control.report("ses_root", readout), /Not every answered question could be checked/)
+    f.changeState("answered")
+    assert.equal((await control.report("ses_root", readout)).disposition, "reported")
+    assert.deepEqual((await control.snapshot()).missions[0].tasks[0].report?.artifact, found.artifact)
   } finally { await f.dispose() }
 })
 

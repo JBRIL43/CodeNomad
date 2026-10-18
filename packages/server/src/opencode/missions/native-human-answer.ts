@@ -8,8 +8,8 @@ import type { SqlClient } from "effect/sql"
 import { canonicalAuthority } from "../../missions/authority-protocol"
 import { MISSION_JOURNAL_STORAGE_PREFIX, MissionJournal, stableToken, type MissionStorage } from "../../missions/journal"
 import { HUMAN_MARK_STORAGE_PREFIX, humanAnswerBindingInputSchema, humanAnswerBindingSchema, humanAnswerRpcInputSchema,
-  humanDecisionRequestSchema, assertHumanAnswerFresh, matchHumanQuestion,
-  type HumanDecisionMark } from "../../missions/human-answer"
+  humanDecisionDiscoverySchema, humanDecisionRequestSchema, assertHumanAnswerFresh, matchHumanQuestion,
+  type HumanDecisionCandidate, type HumanDecisionDiscovery, type HumanDecisionMark, type NativeHumanAnswerGate } from "../../missions/human-answer"
 import { nativeDatabaseStorageID } from "./native-database-identity"
 import { verifyHumanAnswerBridge } from "../automation-plugin"
 import { isLocalNativeTool } from "../../missions/native-call-observation"
@@ -28,6 +28,11 @@ const parse = (value: unknown): unknown => {
 type NativeDatabase = { db: { $client: SqlClient.SqlClient;
   transaction<A>(run: () => Effect.Effect<A, unknown>, options: { behavior: "immediate" }): Effect.Effect<A, unknown> } }
 type StoredMark = HumanDecisionMark & { state: "pending" | "confirmed"; attemptID: string }
+/** Discovery bounds: a decision task's own children, marks per child and returned answers. */
+const MAX_DISCOVERED_CHILDREN = 64
+const MAX_DISCOVERED_MARKS = 16
+const MAX_DISCOVERED_ANSWERS = 16
+const MAX_DELEGATION_MESSAGES = 8
 type NativeForms = { get(id: string): Effect.Effect<unknown, unknown>; state(id: string): Effect.Effect<unknown, unknown>;
   reply(input: { id: string; answer: Form.Answer }): Effect.Effect<void, unknown> }
 
@@ -160,6 +165,64 @@ export const acquireNativeHumanAnswers = Effect.fn("missions.acquireNativeHumanA
         current(); return structuredClone(mark)
       }), { behavior: "immediate" }))
     },
+    /** Exact native structure only: a child of the expected parent whose fresh `subagent`
+     * call carried this assignment, its confirmed UI marks, and the gate's own verify.
+     * Nothing is inferred from text, titles, timing or the model's assertion. */
+    discover: async (raw: unknown): Promise<HumanDecisionDiscovery> => {
+      const request = humanDecisionDiscoverySchema.parse(raw)
+      if (request.projectID !== location.project.id || request.directory !== location.directory) throw new Error("Human decision Location mismatch")
+      const candidates: HumanDecisionCandidate[] = []
+      // Every bound reached or unverifiable confirmed answer leaves the discovery incomplete.
+      let complete = true
+      const bounded = <T>(rows: readonly T[], limit: number) => { if (rows.length > limit) complete = false; return rows.slice(0, limit) }
+      const children = bounded(await run(query("SELECT id FROM session_v2 WHERE parent_id=? AND project_id=? ORDER BY id LIMIT ?",
+        [request.parentSessionID, location.project.id, MAX_DISCOVERED_CHILDREN + 1])), MAX_DISCOVERED_CHILDREN)
+      for (const child of children) {
+        if (typeof child.id !== "string") { complete = false; continue }
+        const messages = bounded(await run(query("SELECT id,data FROM session_message WHERE session_id=? AND type='assistant' AND instr(data,?)>0 LIMIT ?",
+          [request.parentSessionID, JSON.stringify(child.id), MAX_DELEGATION_MESSAGES + 1])), MAX_DELEGATION_MESSAGES)
+        let call: { parentMessageID: string; toolCallID: string } | undefined
+        for (const message of messages) {
+          const data = parse(message.data), content = object(data) && Array.isArray(data.content) ? data.content : []
+          const part = content.find(part => object(part) && part.type === "tool" && part.name === "subagent" && isLocalNativeTool(part)
+            && object(part.state) && object(part.state.metadata) && part.state.metadata.sessionID === child.id && object(part.state.input)
+            && part.state.input.sessionID === undefined && typeof part.state.input.prompt === "string"
+            && part.state.input.prompt.includes(request.assignmentPrompt))
+          if (object(part) && typeof message.id === "string" && typeof part.id === "string") { call = { parentMessageID: message.id, toolCallID: part.id }; break }
+        }
+        if (!call) continue
+        const prefix = nativeKey(`${HUMAN_MARK_STORAGE_PREFIX}/${stableToken(`${location.project.id}\0${location.project.canonical}`, 24)}/${child.id}/`)
+        const marks = bounded(await run(query("SELECT value FROM kv WHERE key>=? AND key<? LIMIT ?",
+          [prefix, `${prefix.slice(0, -1)}0`, MAX_DISCOVERED_MARKS + 1])), MAX_DISCOVERED_MARKS)
+        for (const row of marks) {
+          const stored = (() => { try { return parse(row.value) } catch { return undefined } })()
+          const form = (() => { try { return Schema.decodeUnknownSync(Schema.toType(Form.Info))(object(stored) ? stored.form : undefined) } catch { return undefined } })()
+          // Answers to other kinds of Forms are not decision candidates.
+          if (form && form.metadata?.kind !== "question") continue
+          const tool = form?.metadata?.tool
+          // A pending attempt never qualifies but its outcome is unknown; an unreadable or
+          // mis-bound confirmed mark cannot be excluded either. Both leave discovery incomplete.
+          if (!object(stored) || stored.state !== "confirmed" || stored.via !== "ui" || stored.sessionID !== child.id || !object(stored.answer)
+            || !form || !object(tool) || typeof tool.messageID !== "string" || typeof tool.id !== "string") { complete = false; continue }
+          for (const field of form.fields) {
+            const answer = stored.answer[field.key]
+            if (typeof field.description !== "string" || !(typeof answer === "string" && answer
+              || Array.isArray(answer) && answer.length && answer.every(item => typeof item === "string" && item))) continue
+            const provenance = { kind: "native-form-answer" as const, contract: request.contract,
+              nativeCall: { generation: request.contract.generation, parentSessionID: request.parentSessionID, ...call },
+              sessionID: child.id, formID: form.id, messageID: tool.messageID, toolCallID: tool.id, fieldKey: field.key }
+            try {
+              await api.verify({ ...provenance, question: field.description, answer, projectID: request.projectID, directory: request.directory,
+                delegationToolName: "subagent", assignmentPrompt: request.assignmentPrompt })
+            } catch { complete = false; continue }
+            if (candidates.length >= MAX_DISCOVERED_ANSWERS) return { candidates, complete: false }
+            const value = answer as string | string[]
+            candidates.push({ question: field.description, answer: value, artifact: { kind: "decision", question: field.description, answer: value, provenance } })
+          }
+        }
+      }
+      return { candidates, complete }
+    },
     reply: async (raw: unknown) => {
       const input = humanAnswerRpcInputSchema.parse(raw), body = input.body
       if (!await verifyHumanAnswerBridge(body, input.proof)) throw new Error("Human answer authentication unavailable")
@@ -222,3 +285,10 @@ export const acquireNativeHumanAnswers = Effect.fn("missions.acquireNativeHumanA
   }
   return api
 })
+export type NativeHumanAnswers = Effect.Success<ReturnType<typeof acquireNativeHumanAnswers>>
+
+/** The control-facing gate; `withAnswers` acquires one native answer graph per call. */
+export function nativeHumanAnswerGate(withAnswers: <A>(use: (answers: NativeHumanAnswers) => Promise<A>) => Promise<A>): NativeHumanAnswerGate {
+  return Object.assign((request: Parameters<NativeHumanAnswerGate>[0]) => withAnswers(answers => answers.verify(request)),
+    { discover: (request: Parameters<NonNullable<NativeHumanAnswerGate["discover"]>>[0]) => withAnswers(answers => answers.discover(request)) })
+}
