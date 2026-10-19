@@ -1,4 +1,5 @@
 import type { FormAnswer, FormInfo } from "@opencode/client"
+import { automationInputActive } from "./automation-input"
 
 export interface FormAnswerInteraction { readonly kind: "dock-input" }
 const interactions = new WeakMap<FormAnswerInteraction, { form: string; answer: string }>()
@@ -8,9 +9,17 @@ const identity = (form: FormInfo) => JSON.stringify([form.id, form.sessionID, fo
  * too). This is first-party origin correlation, not physical-person attestation. */
 export function createFormAnswerInteraction(form: () => FormInfo, answer: () => FormAnswer) {
   let pending: FormAnswerInteraction | undefined
+  let automatedTurn = false
   const capture = (event: MouseEvent | KeyboardEvent) => {
     pending = undefined
-    if (!event.isTrusted || (globalThis as typeof globalThis & { __codenomadAutomationDepth?: number }).__codenomadAutomationDepth) return
+    if (!event.isTrusted) return
+    if (automatedTurn || automationInputActive(event.timeStamp)) {
+      // A delayed Enter/Space can synthesize a default-button click with a newer
+      // timestamp in the same event turn. It inherits the key's provenance.
+      automatedTurn = true
+      setTimeout(() => { automatedTurn = false }, 0)
+      return
+    }
     const element = event.target
     if (!(element instanceof HTMLElement)) return
     const owner = event.currentTarget
@@ -43,7 +52,7 @@ export function createFormAnswerInteraction(form: () => FormInfo, answer: () => 
 
 /** One-use, exact request/schema/answer match at the actual SDK send boundary. */
 export function consumeFormAnswerInteraction(token: FormAnswerInteraction | undefined, form: FormInfo, answer: FormAnswer): boolean {
-  if (!token || (globalThis as typeof globalThis & { __codenomadAutomationDepth?: number }).__codenomadAutomationDepth) return false
+  if (!token || automationInputActive()) return false
   const captured = interactions.get(token)
   interactions.delete(token)
   return captured?.form === identity(form) && captured.answer === JSON.stringify(answer)
