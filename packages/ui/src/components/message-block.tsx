@@ -384,6 +384,9 @@ function ToolCallItem(props: ToolCallItemProps) {
     }
   }
 
+  // Not memoized: ToolCall memoizes the arrays that embed these items, once
+  // for its header buttons and once for its overflow menu. Each call must
+  // return fresh icon elements, because one DOM node cannot be in both places.
   const actionMenuItems = (): ActionOverflowMenuItem[] => {
     const items: ActionOverflowMenuItem[] = []
 
