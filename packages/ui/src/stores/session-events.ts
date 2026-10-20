@@ -4,12 +4,11 @@ import type {
   SessionCompactionEnded,
   SessionCreated,
   SessionExecutionFailed,
-  SessionIdle,
   SessionMoved,
+  SessionRetryScheduled,
   SessionRevertCleared,
   SessionRevertCommitted,
   SessionRevertStaged,
-  SessionStatusUpdated,
   TuiToastShow,
 } from "@opencode/client"
 import { getLogger } from "../lib/logger"
@@ -36,14 +35,14 @@ import { showAlertDialog } from "./alerts"
 import {
   createClientSession,
   getIdleSinceForStatusTransition,
-  mapSdkSessionRetry,
-  mapSdkSessionStatus,
+  mapNativeSessionRetry,
   type Session,
   type SessionRetryState,
   type SessionStatus,
 } from "../types/session"
 import { activeSessionId, getAuthoritativelyDeletedSessionIdsForInstance, invalidateSessionMessageLoad, prependSessionListId, revealWorkingSubsession, sessions, setSessionStatus, setSessions, syncInstanceSessionIndicator, withSession } from "./session-state"
 import { mergeFetchedSessionRuntimeState } from "./session-generation-recovery"
+import { getRetrySeconds } from "./session-status"
 import { tGlobal } from "../lib/i18n"
 
 import { fetchSessions, loadMessages, refreshSessionCatalog, removeSessionRuntimeState } from "./session-api"
@@ -63,7 +62,9 @@ const pendingSessionFetches = new Map<string, {
   retry?: SessionRetryState | null
 }>()
 const nativeLifecycleGenerations = new Map<string, number>()
-let activeRetryToast: ToastHandle | null = null
+// The live backoff countdown of one session; it ends when that session's next
+// attempt starts or its run settles.
+let activeRetryToast: { key: string; handle: ToastHandle } | null = null
 const movedSessionRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function advanceNativeLifecycle(instanceId: string, sessionId: string): number {
@@ -75,6 +76,12 @@ function advanceNativeLifecycle(instanceId: string, sessionId: string): number {
 
 function isCurrentNativeLifecycle(instanceId: string, sessionId: string, generation: number): boolean {
   return nativeLifecycleGenerations.get(`${instanceId}\0${sessionId}`) === generation
+}
+
+function dismissRetryToast(instanceId: string, sessionId: string): void {
+  if (activeRetryToast?.key !== `${instanceId}\0${sessionId}`) return
+  activeRetryToast.handle.dismiss()
+  activeRetryToast = null
 }
 
 function speakCompletedAssistantText(instanceId: string, sessionId: string): void {
@@ -126,6 +133,7 @@ function handleNativeSessionEvent(instanceId: string, event: NativeSessionEvent)
       return
     case "session.compaction.started":
       advanceNativeLifecycle(instanceId, event.data.sessionID)
+      dismissRetryToast(instanceId, event.data.sessionID)
       ensureSessionStatus(instanceId, event.data.sessionID, "compacting", event.location?.directory)
       return
     case "session.compaction.failed":
@@ -139,14 +147,21 @@ function handleNativeSessionEvent(instanceId: string, event: NativeSessionEvent)
         failed: true,
         interrupted: true,
         refreshMessages: true,
+        // A person's stop needs no notice and a shutdown resumes the turn later;
+        // OpenCode stopping an unattended run does.
+        notify: event.data.reason === "inactivity",
         directory: event.location?.directory,
       })
       return
     case "session.execution.succeeded":
       void reconcileTerminalNativeSessionStatus(instanceId, event.data.sessionID, {
         failed: false,
+        notify: true,
         directory: event.location?.directory,
       })
+      return
+    case "session.retry.scheduled":
+      handleRetryScheduled(instanceId, event)
       return
   }
 
@@ -162,14 +177,21 @@ function handleNativeSessionEvent(instanceId: string, event: NativeSessionEvent)
     event.type.startsWith("session.tool.")
   ) {
     advanceNativeLifecycle(instanceId, sessionId)
+    // Ordinary work replaces the backoff: the next attempt has started.
+    dismissRetryToast(instanceId, sessionId)
     ensureSessionStatus(instanceId, sessionId, "working", event.location?.directory)
   }
 }
 
+/**
+ * OpenCode V2 settles each busy period with one session.execution.* event. It is
+ * a hint until the native active list confirms the session no longer runs; only
+ * then does the run count as finished (`notify` announces that completion).
+ */
 async function reconcileTerminalNativeSessionStatus(
   instanceId: string,
   sessionId: string,
-  options: { failed: boolean; interrupted?: boolean; refreshMessages?: boolean; directory?: string },
+  options: { failed: boolean; interrupted?: boolean; refreshMessages?: boolean; notify?: boolean; directory?: string },
 ): Promise<void> {
   const generation = advanceNativeLifecycle(instanceId, sessionId)
   let activeSessions: Record<string, unknown> | null = null
@@ -193,6 +215,7 @@ async function reconcileTerminalNativeSessionStatus(
   }
   setTerminalNativeSessionStatus(instanceId, sessionId, options.failed, options.directory)
   refreshSettledSessionMessages(instanceId, sessionId, options.refreshMessages)
+  if (options.notify) notifySessionAttention("sessionDone", instanceId, sessionId)
 }
 
 function refreshSettledSessionMessages(instanceId: string, sessionId: string, force = false): void {
@@ -217,6 +240,7 @@ function setTerminalNativeSessionStatus(instanceId: string, sessionId: string, f
   const existing = sessions().get(instanceId)?.get(sessionId)
   if (existing) setSessionStatus(instanceId, sessionId, "idle", { force: true })
   else ensureSessionStatus(instanceId, sessionId, "idle", directory)
+  dismissRetryToast(instanceId, sessionId)
   if (failed) messageStoreBus.getOrCreate(instanceId).failPendingSends(sessionId)
   speakCompletedAssistantText(instanceId, sessionId)
 }
@@ -525,53 +549,34 @@ function handleSessionDeleted(instanceId: string, event: EventSessionDeleted): v
 
   log.info(`[SSE] Session deleted: ${sessionId}`)
   nativeLifecycleGenerations.delete(`${instanceId}\0${sessionId}`)
+  dismissRetryToast(instanceId, sessionId)
   removeSessionRuntimeState(instanceId, sessionId)
 }
 
-function handleSessionIdle(instanceId: string, event: SessionIdle): void {
+/** Native provider backoff. The next attempt's step events clear it as ordinary work. */
+function handleRetryScheduled(instanceId: string, event: SessionRetryScheduled): void {
   const sessionId = event.data.sessionID
-  if (!sessionId) return
-
   advanceNativeLifecycle(instanceId, sessionId)
-  notifySessionAttention("sessionDone", instanceId, sessionId)
-
-  ensureSessionStatus(instanceId, sessionId, "idle", event.location?.directory)
-  refreshSettledSessionMessages(instanceId, sessionId)
-  speakCompletedAssistantText(instanceId, sessionId)
-  log.info(`[SSE] Session idle: ${sessionId}`)
-}
-
-function handleSessionStatus(instanceId: string, event: SessionStatusUpdated): void {
-  const sessionId = event.data.sessionID
-  if (!sessionId) return
-
-  advanceNativeLifecycle(instanceId, sessionId)
-  const rawStatus = event.data.status
-  const status = mapSdkSessionStatus(rawStatus)
-  const retry = mapSdkSessionRetry(rawStatus)
-  ensureSessionStatus(instanceId, sessionId, status, event.location?.directory, retry)
-  if (status === "idle") refreshSettledSessionMessages(instanceId, sessionId)
-  if (retry) {
-    const remainingSeconds = Math.max(0, Math.round((retry.next - Date.now()) / 1000))
-    const countdown =
-      remainingSeconds > 0
-        ? tGlobal("sessionList.status.retryingIn", { seconds: String(remainingSeconds) })
-        : tGlobal("sessionList.status.retrying")
-    const label = getSessionTitle(instanceId, sessionId)
-    activeRetryToast?.dismiss()
-    // A live retry status replaced by the next attempt, not an event to keep.
-    activeRetryToast = showToastNotification({ category: "sessions", transient: true,
-      title: label || getInstanceDisplayName(instanceId),
-      message: tGlobal("sessionList.status.retryToast", {
-        countdown,
-        message: retry.message,
-        attempt: String(retry.attempt),
-      }),
-      variant: "error",
-      duration: 7000,
-    })
-  }
-  log.info(`[SSE] Session status updated: ${sessionId}`, { status })
+  const retry = mapNativeSessionRetry(event.data)
+  ensureSessionStatus(instanceId, sessionId, "working", event.location?.directory, retry)
+  const remainingSeconds = getRetrySeconds(retry.next)
+  const countdown =
+    remainingSeconds > 0
+      ? tGlobal("sessionList.status.retryingIn", { seconds: String(remainingSeconds) })
+      : tGlobal("sessionList.status.retrying")
+  const label = getSessionTitle(instanceId, sessionId)
+  activeRetryToast?.handle.dismiss()
+  // A live retry status replaced by the next attempt, not an event to keep.
+  activeRetryToast = { key: `${instanceId}\0${sessionId}`, handle: showToastNotification({ category: "sessions", transient: true,
+    title: label || getInstanceDisplayName(instanceId),
+    message: tGlobal("sessionList.status.retryToast", {
+      countdown,
+      message: retry.message,
+      attempt: String(retry.attempt),
+    }),
+    variant: "error",
+    duration: 7000,
+  }) }
 }
 
 function handleSessionCompacted(instanceId: string, event: SessionCompactionEnded): void {
@@ -606,6 +611,8 @@ function handleSessionError(instanceId: string, event: SessionExecutionFailed): 
   if (sessionId) {
     void reconcileTerminalNativeSessionStatus(instanceId, sessionId, {
       failed: true,
+      // The alert stays in this window; the notice reaches history and the system.
+      notify: true,
       directory: event.location?.directory,
     })
   }
@@ -673,8 +680,6 @@ export {
   handleSessionCompacted,
   handleSessionDeleted,
   handleSessionError,
-  handleSessionIdle,
-  handleSessionStatus,
   handleSessionUpdate,
   handleTuiToast,
 }

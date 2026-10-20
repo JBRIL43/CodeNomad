@@ -8,6 +8,7 @@ import { MESSAGE_WINDOW_PAGE_SIZE } from "./message-v2/message-window"
 import { messageStoreBus } from "./message-v2/bus"
 import { sseManager } from "../lib/sse-manager"
 import { getLogger } from "../lib/logger"
+import { isExecutionTerminalEvent } from "../lib/native-execution-events"
 import { createCompactionDeltaBuffer } from "./compaction-delta-buffer"
 
 const log = getLogger("session")
@@ -711,7 +712,7 @@ export function applyOpenCodeDataEvent(
   const entry = transcript?.entry ?? primary
   if (transcript && typeof sessionId === "string") {
     if (event.type === "session.compaction.started") unobservedCompactions.delete(messageRevisionKey(instanceId, sessionId))
-    // A new execution must not inherit a preceding idle event's deferred cleanup.
+    // A new execution must not inherit a preceding settlement's deferred cleanup.
     if (event.type === "session.execution.started" || eventMayAppendMessage(event)) transcript.retireWhenDrained = false
   }
   if (transcript && typeof sessionId === "string") {
@@ -840,19 +841,31 @@ function retireDrainedTranscript(instanceId: string, sessionId: string, transcri
   if (!transcript.retireWhenDrained || !isTranscriptCurrent(instanceId, sessionId, transcript)
     || transcript.rotating || transcript.resyncing || transcript.needsAuthoritativeResync
     || transcript.retryTimer || transcript.queue.length) return
+  // Work that outlives the settlement still needs this reducer: prompts parked in
+  // its inbox (e.g. after an interruption) are listed from it, and unsettled rows
+  // settle only in it.
+  const data = transcript.entry.data
+  if (data.session.pending.list(sessionId).length || data.session.message.list(sessionId).some(isUnsettledAtSettlement)) return
   destroyOpenCodeData(instanceId, sessionId)
+}
+
+/** A user shell still running, or tools whose terminal event never arrived: the reducer reconciles those itself. */
+function isUnsettledAtSettlement(message: SessionMessageInfo): boolean {
+  if (message.type === "shell") return message.status === "running"
+  return message.type === "assistant"
+    && message.content.some((part) => part.type === "tool" && (part.state.status === "streaming" || part.state.status === "running"))
 }
 
 export function finishOpenCodeDataEvent(instanceId: string, event: OpenCodeEvent): void {
   const sessionId = eventSessionId(event)
   if (sessionId === undefined) return
   if (event.type === "session.deleted") destroyOpenCodeData(instanceId, sessionId)
-  if (event.type !== "session.idle") return
   const transcript = transcriptEntries.get(messageRevisionKey(instanceId, sessionId))
   if (!transcript) return
   // The caller has projected the synchronous page. Queued terminal updates and
   // overflow recovery must publish their final page before releasing its reducer.
-  transcript.retireWhenDrained = true
+  if (isExecutionTerminalEvent(event)) transcript.retireWhenDrained = true
+  // A settlement deferred by parked or running work completes once that clears.
   retireDrainedTranscript(instanceId, sessionId, transcript)
 }
 
