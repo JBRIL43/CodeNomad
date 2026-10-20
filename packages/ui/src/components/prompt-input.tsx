@@ -5,8 +5,9 @@ import { createPastedPlaceholderRegex, pastedDisplayCounterRegex } from "./promp
 import { preparePromptSubmission, resolvePromptDelivery } from "./prompt-input/submitPrompt"
 import { findConversationStream, focusConversationStream } from "./focus-conversation"
 import { shouldTypeIntoComposer } from "./prompt-input/type-to-focus"
-import { hotkeyLabel } from "../lib/hotkeys"
+import { hotkeyLabel, withHotkey } from "../lib/hotkeys"
 import { keyboardRegistry } from "../lib/keyboard-registry"
+import { PROMPT_CLEAR_EVENT } from "../lib/session-sidebar-events"
 import { getActiveInstance } from "../stores/instances"
 import { agents, executeCustomCommand } from "../stores/sessions"
 import { getCommands } from "../stores/commands"
@@ -850,12 +851,14 @@ export default function PromptInput(props: PromptInputProps) {
       items.push({
         key: "history-previous",
         label: t("promptInput.history.previousAriaLabel"),
+        description: hotkeyLabel("prompt-history-prev") || undefined,
         disabled: !canHistoryGoPrevious(),
         onSelect: () => { selectPreviousHistory({ force: true, isPickerOpen: showPicker(), getTextarea: () => textareaRef }) },
       })
       items.push({
         key: "history-next",
         label: t("promptInput.history.nextAriaLabel"),
+        description: hotkeyLabel("prompt-history-next") || undefined,
         disabled: !canHistoryGoNext(),
         onSelect: () => { selectNextHistory({ force: true, isPickerOpen: showPicker(), getTextarea: () => textareaRef }) },
       })
@@ -863,6 +866,7 @@ export default function PromptInput(props: PromptInputProps) {
     items.push({
       key: "clear",
       label: t("promptInput.clear.title"),
+      description: hotkeyLabel("clear-input") || undefined,
       icon: <X class="h-4 w-4" aria-hidden="true" />,
       disabled: !canClearPrompt(),
       onSelect: handleClearPrompt,
@@ -936,7 +940,11 @@ export default function PromptInput(props: PromptInputProps) {
               style={fieldHeightStyle()}
             >
               <textarea
-                ref={textareaRef}
+                ref={(element) => {
+                  textareaRef = element
+                  // The Clear shortcut and palette command run this composer's own Clear action.
+                  element.addEventListener(PROMPT_CLEAR_EVENT, handleClearPrompt)
+                }}
                 class={`prompt-input ${mode() === "shell" ? "shell-mode" : ""}`}
                 dir="auto"
                 placeholder={getPlaceholder()}
@@ -998,7 +1006,7 @@ export default function PromptInput(props: PromptInputProps) {
                 onClick={handleAbort}
                 disabled={!canStop()}
                 aria-label={t("promptInput.stopSession.ariaLabel")}
-                title={t("promptInput.stopSession.title") + (hotkeyLabel("session-abort") ? ` (${hotkeyLabel("session-abort")})` : "")}
+                title={withHotkey(t("promptInput.stopSession.title"), "session-abort")}
               >
                 <svg class="stop-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <rect x="4" y="4" width="12" height="12" />
@@ -1010,7 +1018,7 @@ export default function PromptInput(props: PromptInputProps) {
                 onClick={() => void handleSend()}
                 disabled={!canSend()}
                 aria-label={t(mode() === "normal" && promptDelivery() === "queue" ? "promptInput.send.queueAriaLabel" : "promptInput.send.ariaLabel")}
-                title={t(mode() === "normal" && promptDelivery() === "queue" ? "promptInput.send.queueAriaLabel" : "promptInput.send.ariaLabel") + (hotkeyLabel("prompt-send") ? ` (${hotkeyLabel("prompt-send")})` : "")}
+                title={withHotkey(t(mode() === "normal" && promptDelivery() === "queue" ? "promptInput.send.queueAriaLabel" : "promptInput.send.ariaLabel"), "prompt-send")}
               >
                 <Show
                   when={mode() === "shell"}
