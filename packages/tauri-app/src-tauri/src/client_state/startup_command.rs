@@ -1,5 +1,5 @@
-//! Forwards Preferences startup-state commands to the exact local window that
-//! opened Preferences. That renderer runs them through its own client-state
+//! Forwards Preferences startup-state commands to the local window chosen as
+//! the Preferences opener. That renderer runs them through its own client-state
 //! store and replies with its access proof; Preferences never writes state.
 
 use super::ClientState;
@@ -142,8 +142,8 @@ pub(crate) fn command_name(value: &str) -> Result<&'static str, String> {
         .ok_or_else(|| "Invalid startup state command".to_string())
 }
 
-/// Returns `Ok(None)` when the opener is closed, ephemeral or has not claimed
-/// client-state access; never falls back to another window.
+/// Returns `Ok(None)` when the window is closed, ephemeral or has not claimed
+/// client-state access; the caller chooses which window to ask.
 pub(crate) async fn run_in_local_window(
     app: &AppHandle,
     label: &str,

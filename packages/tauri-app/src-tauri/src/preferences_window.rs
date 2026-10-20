@@ -409,7 +409,7 @@ pub(crate) fn navigate_backend(app: &AppHandle) {
         {
             let app_state = app.state::<AppState>();
             let preferences = app.state::<PreferencesWindow>();
-            // A restored window has no host-observed opener: startup state stays unavailable.
+            // A restored window has no host-observed opener: the most recent local window answers startup state.
             if let Err(error) =
                 open_preferences(app, &app_state, &preferences, request, false, None)
             {
@@ -517,6 +517,17 @@ fn effective_startup_command(
     }
 }
 
+/// Startup state is each window's own. When the opener is unknown (Preferences
+/// restored at launch) or closed, the most recently used local window is
+/// adopted as the opener, with a new epoch fencing changes prepared before.
+fn startup_state_target(
+    opener: Option<String>,
+    is_live: impl Fn(&str) -> bool,
+    recent: Option<String>,
+) -> Option<String> {
+    opener.filter(|label| is_live(label)).or(recent)
+}
+
 #[tauri::command]
 pub(crate) async fn preferences_opener_startup_state(
     webview: tauri::Webview,
@@ -531,6 +542,16 @@ pub(crate) async fn preferences_opener_startup_state(
         return Err("Opener startup state requires the Preferences window".to_string());
     }
     let command = crate::client_state::startup_state_command(&command)?;
+    let current = preferences.opener();
+    let target = startup_state_target(
+        current.label.clone(),
+        |label| app.get_webview_window(label).is_some(),
+        app.state::<crate::local_windows::LocalWindows>()
+            .mru_label(),
+    );
+    if target.is_some() && target != current.label {
+        preferences.set_opener(target, false);
+    }
     let opener = preferences.opener();
     let effective = effective_startup_command(&opener, command, epoch);
     let state = match opener.label.as_deref() {
@@ -802,6 +823,37 @@ mod tests {
         let restored = preferences.opener();
         assert_eq!(restored.label, None);
         assert!(restored.epoch > second.epoch);
+    }
+
+    #[test]
+    fn startup_state_targets_a_live_opener_otherwise_the_most_recent_window() {
+        let live = |label: &str| label != "closed";
+        let target = |opener: Option<&str>, recent: Option<&str>| {
+            startup_state_target(opener.map(str::to_string), live, recent.map(str::to_string))
+        };
+        assert_eq!(
+            target(Some("window-a"), Some("window-b")).as_deref(),
+            Some("window-a")
+        );
+        assert_eq!(
+            target(Some("closed"), Some("window-b")).as_deref(),
+            Some("window-b")
+        );
+        assert_eq!(target(None, Some("window-b")).as_deref(), Some("window-b"));
+        assert_eq!(target(None, None), None);
+
+        // Adopting the target as opener rotates the epoch, fencing earlier changes.
+        let preferences = PreferencesWindow::default();
+        preferences.set_opener(None, true);
+        let restored = preferences.opener();
+        preferences.set_opener(target(restored.label.as_deref(), Some("window-b")), false);
+        let adopted = preferences.opener();
+        assert_eq!(adopted.label.as_deref(), Some("window-b"));
+        assert!(adopted.epoch > restored.epoch);
+        assert_eq!(
+            effective_startup_command(&adopted, "clear", Some(restored.epoch)),
+            "read"
+        );
     }
 
     #[test]

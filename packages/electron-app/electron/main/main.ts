@@ -34,7 +34,7 @@ import { selectedProfileKey, selectionDialogContent } from "./profile-selection-
 import { SELECTION_ANSWER_ENVIRONMENT, SELECTION_CLEANUP_ENVIRONMENT, SELECTION_TEMP_PREFIX, sweepSelectionFolders, takeRelaunchHandoff } from "./profile-selection-cleanup"
 import { clampWindowBounds, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, MIN_WINDOW_WIDTH, installWindowSizeConstraints, installWindowZoomInput, setWindowZoomLevel, zoomedWindowMinimum, restoreWindowState, WindowStateTracker } from "./window-state"
 import { flushRendererClientStateBeforeShutdown } from "./renderer-client-state-flush"
-import { forwardOpenerStartupState, runStartupStateCommandInWindow } from "./opener-startup-state"
+import { forwardOpenerStartupState, runStartupStateCommandInWindow, startupStateTargetId } from "./opener-startup-state"
 import { resolveProfileRoots } from "./data-profile-cleanup"
 import { setupDataProfileCleanupIPC } from "./data-profile-cleanup-ipc"
 import { openExternalWithFeedback } from "./open-external"
@@ -445,10 +445,13 @@ function runPrimary(firstIntent: LaunchIntent) {
     openPreferences,
     getRequest: (window) => preferencesWindows.request(window),
     openerStartupState: async (window, command, epoch) => {
-      const opener = preferencesWindows.opener(window)
+      let opener = preferencesWindows.opener(window)
       if (!opener) throw new Error("Preferences window is no longer current")
-      return forwardOpenerStartupState(opener, command, epoch, (openerId, effective) => {
-        const target = registry.get(openerId)?.window
+      const live = (id: string) => { const target = registry.get(id)?.window; return Boolean(target && !target.isDestroyed()) }
+      const id = startupStateTargetId(opener.id, live, registry.mruRecord()?.id)
+      if (id && id !== opener.id) opener = preferencesWindows.adoptOpener(window, id) ?? opener
+      return forwardOpenerStartupState(opener, command, epoch, (targetId, effective) => {
+        const target = registry.get(targetId)?.window
         return runStartupStateCommandInWindow(target, effective, (url) => isAllowedRendererOrigin(url, getAllowedOrigins(target ?? null)))
       })
     },
