@@ -114,16 +114,10 @@ export const commandMessages = {
   "commands.clearInput.description": "נקה את תיבת הטקסט של הפקודה",
   "commands.clearInput.keywords": "נקה, אפס",
 
-
   "commands.thinkingBlocks.label.show": "הצג חשיבה",
   "commands.thinkingBlocks.label.hide": "הסתר חשיבה",
   "commands.thinkingBlocks.description": "הצג או הסתר קטעי חשיבה של ה-AI",
   "commands.thinkingBlocks.keywords": "חשיבה, הצג, הסתר",
-
-  "commands.timelineToolCalls.label.show": "הצג קריאות כלי בציר הזמן",
-  "commands.timelineToolCalls.label.hide": "הסתר קריאות כלי בציר הזמן",
-  "commands.timelineToolCalls.description": "הצג/הסתר קריאות כלי בציר הודעות",
-  "commands.timelineToolCalls.keywords": "ציר זמן, כלי, הצג, הסתר",
 
   "commands.keyboardShortcutHints.label.show": "הצג רמזי קיצורי מקלדת",
   "commands.keyboardShortcutHints.label.hide": "הסתר רמזי קיצורי מקלדת",

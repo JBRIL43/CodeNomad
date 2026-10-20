@@ -114,16 +114,10 @@ export const commandMessages = {
   "commands.clearInput.description": "Den Textbereich des Prompts löschen",
   "commands.clearInput.keywords": "löschen, zurücksetzen",
 
-
   "commands.thinkingBlocks.label.show": "Denken anzeigen",
   "commands.thinkingBlocks.label.hide": "Denken ausblenden",
   "commands.thinkingBlocks.description": "AI-Denkabschnitte anzeigen oder ausblenden",
   "commands.thinkingBlocks.keywords": "denken, schlussfolgern, umschalten, anzeigen, ausblenden",
-
-  "commands.timelineToolCalls.label.show": "Timeline-Tool-Aufrufe anzeigen",
-  "commands.timelineToolCalls.label.hide": "Timeline-Tool-Aufrufe ausblenden",
-  "commands.timelineToolCalls.description": "Tool-Aufruf-Einträge in der Nachrichten-Timeline umschalten",
-  "commands.timelineToolCalls.keywords": "timeline, tool, umschalten",
 
   "commands.keyboardShortcutHints.label.show": "Tastenkombinations-Hinweise anzeigen",
   "commands.keyboardShortcutHints.label.hide": "Tastenkombinations-Hinweise ausblenden",

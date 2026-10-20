@@ -114,16 +114,10 @@ export const commandMessages = {
   "commands.clearInput.description": "Очистить поле prompt",
   "commands.clearInput.keywords": "очистить, сброс",
 
-
   "commands.thinkingBlocks.label.show": "Показать размышления",
   "commands.thinkingBlocks.label.hide": "Скрыть размышления",
   "commands.thinkingBlocks.description": "Показать или скрыть секции размышлений ИИ",
   "commands.thinkingBlocks.keywords": "thinking, reasoning, переключить, показать, скрыть",
-
-  "commands.timelineToolCalls.label.show": "Показать Tool Calls в таймлайне",
-  "commands.timelineToolCalls.label.hide": "Скрыть Tool Calls в таймлайне",
-  "commands.timelineToolCalls.description": "Переключить отображение вызовов инструментов в таймлайне сообщений",
-  "commands.timelineToolCalls.keywords": "таймлайн, tool, переключить",
 
   "commands.keyboardShortcutHints.label.show": "Показать подсказки сочетаний",
   "commands.keyboardShortcutHints.label.hide": "Скрыть подсказки сочетаний",
