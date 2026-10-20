@@ -94,8 +94,13 @@ const defaults: Record<string, HotkeyBinding[]> = {
   "instance-rename": [{ key: "F2" }],
 }
 
-export function defaultHotkeyBindings(id: string, promptSubmitOnEnter = true): HotkeyBinding[] {
+export const isMacPlatform = () => typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac")
+
+export function defaultHotkeyBindings(id: string, promptSubmitOnEnter = true, mac = isMacPlatform()): HotkeyBinding[] {
   if (id === "prompt-send") return [{ key: "Enter", ...(!promptSubmitOnEnter ? { mod: true } : {}) }]
+  // Alt+Enter leads, Mod+Shift+Enter keeps working. On macOS Option+Return is
+  // the native line break in text fields, so only Cmd+Shift+Return sends there.
+  if (id === "prompt-alternate-send" && !mac) return [{ key: "Enter", alt: true }, { key: "Enter", mod: true, shift: true }]
   if (id === "prompt-newline") return promptSubmitOnEnter
     ? [{ key: "Enter", shift: true }, { key: "Enter", mod: true }]
     : [{ key: "Enter" }, { key: "Enter", shift: true }]

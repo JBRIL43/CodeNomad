@@ -1,5 +1,5 @@
 import { Suspense, createEffect, createMemo, createSignal, createUniqueId, lazy, on, onCleanup, Show } from "solid-js"
-import { Loader2, Mic, Paperclip, Volume2, X } from "lucide-solid"
+import { ListEnd, Loader2, Mic, Paperclip, SendHorizontal, Volume2, X } from "lucide-solid"
 import { addAttachment, clearAttachments, removeAttachment } from "../stores/attachments"
 import { createPastedPlaceholderRegex, pastedDisplayCounterRegex } from "./prompt-input/attachmentPlaceholders"
 import { preparePromptSubmission, resolvePromptDelivery } from "./prompt-input/submitPrompt"
@@ -719,7 +719,9 @@ export default function PromptInput(props: PromptInputProps) {
     return hasText || attachments().length > 0
   }
 
-  const canClearPrompt = () => prompt().length > 0
+  // Boolean memos, so the action menu rebuilds only when they flip, not per keystroke.
+  const canClearPrompt = createMemo(() => prompt().length > 0)
+  const canSendDraft = createMemo(() => canSend())
 
   const submitOnEnter = () => preferences().promptSubmitOnEnter
 
@@ -799,6 +801,20 @@ export default function PromptInput(props: PromptInputProps) {
 
   const buildPromptActionMenuItems = (): ActionOverflowMenuItem[] => {
     const items: ActionOverflowMenuItem[] = []
+    // The other follow-up delivery than Enter's, like the alternate-send shortcut:
+    // queue when Enter steers, send now when Enter queues. Only a running session differs.
+    const alternate = preferences().followUpBehavior === "queue" ? "steer" : "queue"
+    items.push({
+      key: "alternate-send",
+      label: t(alternate === "queue" ? "promptInput.send.queueAriaLabel" : "promptQueue.actions.steer"),
+      description: hotkeyLabel("prompt-alternate-send") || undefined,
+      icon: alternate === "queue"
+        ? <ListEnd class="h-4 w-4" aria-hidden="true" />
+        : <SendHorizontal class="h-4 w-4" aria-hidden="true" />,
+      disabled: mode() !== "normal" || !props.isSessionBusy || !canSendDraft(),
+      // The shortcut's own resolution: an idle session always sends normally.
+      onSelect: () => void handleSend(promptDelivery(true)),
+    })
     if (showVoiceInput()) {
       items.push({
         key: "voice",
