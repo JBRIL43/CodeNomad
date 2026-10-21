@@ -31,8 +31,12 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close(); await cache?.dispose() })
 
-async function fixture(mixed = false, pausePreviews = false, holdMessages = false, deep = false, hiddenTimeline = false) {
+async function fixture(mixed = false, pausePreviews = false, holdMessages = false, deep = false, hiddenTimeline = false,
+  options: { missionPicker?: boolean; mac?: boolean } = {}) {
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
+  // Default shortcuts follow `navigator.platform`. A string, like `waitFrames`: the
+  // test transpiler's helpers do not exist in the page.
+  if (options.mac) await page.addInitScript({ content: 'Object.defineProperty(navigator, "platform", { get: () => "MacIntel", configurable: true })' })
   const databaseDirectory = await mkdtemp(path.join(os.tmpdir(), "codenomad-outline-browser-"))
   const databasePath = path.join(databaseDirectory, "history.sqlite")
   const db = new DatabaseSync(databasePath)
@@ -100,7 +104,7 @@ async function fixture(mixed = false, pausePreviews = false, holdMessages = fals
     }
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) }).catch(() => {})
   })
-  await page.goto(url + `?${mixed ? "mixed&" : ""}${deep ? "deep&" : ""}${hiddenTimeline ? "hiddenTimeline&" : ""}${holdMessages ? "holdMessages" : ""}`)
+  await page.goto(url + `?${mixed ? "mixed&" : ""}${deep ? "deep&" : ""}${hiddenTimeline ? "hiddenTimeline&" : ""}${options.missionPicker ? "missionPicker&" : ""}${holdMessages ? "holdMessages" : ""}`)
   await page.waitForFunction(() => Boolean((window as any).fixture))
   // The deep fixture's tool rows contribute extra segments.
   if (deep) await page.waitForFunction(() => Number(document.querySelector(".message-timeline")?.getAttribute("data-segment-count")) >= 1500)
@@ -1254,31 +1258,65 @@ test("keyboard scrolling owns the timeline without paging the transcript", async
   } finally { await f.close() }
 })
 
-test("Shift+Up/Down jump between user messages across history windows, never from the composer", async () => {
+test("Alt+Up/Down jump between user messages across history windows, from the conversation and the composer", async () => {
   const f = await fixture(true)
   try {
     // Mixed transcript: every fifth message is a user message; 1300 opens the resident window.
     await clickTimeline(f.page, 1300)
     await assertPassageAtTop(f.page, 1300)
     await f.page.locator(".message-stream").focus()
-    await f.page.keyboard.press("Shift+ArrowDown")
+    await f.page.keyboard.press("Alt+ArrowDown")
     await assertPassageAtTop(f.page, 1305)
-    await f.page.keyboard.press("Shift+ArrowUp")
+    await f.page.keyboard.press("Alt+ArrowUp")
     await assertPassageAtTop(f.page, 1300)
-    await f.page.keyboard.press("Shift+ArrowUp")
+    await f.page.keyboard.press("Alt+ArrowUp")
     await assertPassageAtTop(f.page, 1295)
     assert.ok(f.windows.some(target => target.messageID === navigationMessageId(1295)), `pages the window around it: ${JSON.stringify(f.windows)}`)
 
+    // From the composer, the jump keeps the draft, its caret and focus; Shift+ArrowUp still selects text.
     const composer = f.page.locator("textarea.prompt-input").first()
-    await composer.fill("first line\nsecond line")
+    const draft = "first line\nsecond line"
+    const field = () => composer.evaluate((element: HTMLTextAreaElement) =>
+      ({ focused: document.activeElement === element, value: element.value, start: element.selectionStart, end: element.selectionEnd }))
+    await composer.fill(draft)
     await composer.press("End")
-    await composer.evaluate(element => element.addEventListener("keydown", event => { (window as any).jumpKeyPrevented = event.defaultPrevented }, { once: true }))
-    const windows = f.windows.length
+    await composer.press("Alt+ArrowDown")
+    await assertPassageAtTop(f.page, 1300)
+    assert.deepEqual(await field(), { focused: true, value: draft, start: draft.length, end: draft.length })
     await composer.press("Shift+ArrowUp")
-    assert.equal(await f.page.evaluate(() => (window as any).jumpKeyPrevented), false, "the composer keeps Shift+ArrowUp")
-    assert.ok(await composer.evaluate((element: HTMLTextAreaElement) => element.selectionStart < element.selectionEnd), "and selects text with it")
-    await assertPassageAtTop(f.page, 1295)
-    assert.equal(f.windows.length, windows)
+    const selected = await field()
+    assert.ok(selected.start < selected.end, `Shift+ArrowUp selects text: ${JSON.stringify(selected)}`)
+    await assertPassageAtTop(f.page, 1300)
+
+    // An open composer picker keeps every arrow key.
+    await f.page.evaluate(() => (window as any).fixture.activateInstance())
+    await composer.fill("/")
+    await f.page.locator("[data-prompt-picker]").waitFor()
+    await composer.press("Alt+ArrowUp")
+    await waitFrames(f.page, 10)
+    await assertPassageAtTop(f.page, 1300)
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+for (const mac of [false, true]) test(`${mac ? "Cmd+Option" : "Alt"}+Up/Down move the mission picker search's option, not the conversation`, async () => {
+  const f = await fixture(true, false, false, false, false, { missionPicker: true, mac })
+  const jump = (key: "ArrowUp" | "ArrowDown") => `${mac ? "Meta+Alt" : "Alt"}+${key}`
+  try {
+    await clickTimeline(f.page, 1300)
+    await assertPassageAtTop(f.page, 1300)
+    await f.page.locator(".message-stream").focus()
+    await f.page.keyboard.press(jump("ArrowDown"))
+    await assertPassageAtTop(f.page, 1305)
+    await f.page.locator(".mission-picker-field").click()
+    const search = f.page.locator(".mission-picker-search")
+    await search.focus()
+    await f.page.keyboard.press("ArrowDown")
+    const before = await search.getAttribute("aria-activedescendant")
+    await f.page.keyboard.press(jump("ArrowDown"))
+    assert.notEqual(await search.getAttribute("aria-activedescendant"), before, "the picker moves its active option")
+    await waitFrames(f.page, 10)
+    await assertPassageAtTop(f.page, 1305)
     assert.deepEqual(f.errors, [])
   } finally { await f.close() }
 })
@@ -1292,12 +1330,12 @@ async function deferJumpBeyondWindow(f: Awaited<ReturnType<typeof fixture>>) {
   const release = f.holdIndex()
   await f.page.locator(".message-stream").focus()
   for (let press = 0; press < 60 && Math.abs(await rowOffset(f.page, 1300) ?? Infinity) > 2; press++) {
-    await f.page.keyboard.press("Shift+ArrowUp")
+    await f.page.keyboard.press("Alt+ArrowUp")
     await waitFrames(f.page, 4)
   }
   await assertPassageAtTop(f.page, 1300)
   assert.ok(f.outlines.length > 0, "the first jump requests the index")
-  await f.page.keyboard.press("Shift+ArrowUp")
+  await f.page.keyboard.press("Alt+ArrowUp")
   await assertPassageAtTop(f.page, 1300)
   assert.equal(f.windows.length, 0, "nothing resident precedes the first user message")
   return release
@@ -1343,18 +1381,18 @@ test("repeated user message jumps advance through prompts the list cannot raise 
       document.querySelector('.message-timeline-segment[aria-current="true"]')?.getAttribute("data-message-id") === id, navigationMessageId(index), { timeout: 5000 })
     await f.page.locator(".message-stream").focus()
     const before = await active()
-    await f.page.keyboard.press("Shift+ArrowDown")
+    await f.page.keyboard.press("Alt+ArrowDown")
     await f.page.waitForFunction(id => {
       const current = document.querySelector('.message-timeline-segment[aria-current="true"]')?.getAttribute("data-message-id")
       return current && current !== id
     }, before)
     const first = Number((await active())!.slice(4))
     assert.ok(first < 1497, `the first jump lands near the end: ${first}`)
-    await f.page.keyboard.press("Shift+ArrowDown")
+    await f.page.keyboard.press("Alt+ArrowDown")
     await waitActive(first + 1)
-    await f.page.keyboard.press("Shift+ArrowDown")
+    await f.page.keyboard.press("Alt+ArrowDown")
     await waitActive(first + 2)
-    await f.page.keyboard.press("Shift+ArrowUp")
+    await f.page.keyboard.press("Alt+ArrowUp")
     await waitActive(first + 1)
     assert.equal(f.windows.length, 0)
     assert.deepEqual(f.errors, [])
