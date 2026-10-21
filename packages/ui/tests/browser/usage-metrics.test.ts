@@ -50,26 +50,31 @@ const usageLines = (page: Page) => page.locator(".message-step-usage-toggle")
 const chips = (page: Page, messageId: string) => page.locator(`[data-message-id="${messageId}"] .message-step-usage-chip`)
   .evaluateAll(nodes => nodes.map(node => `${node.getAttribute("data-label")} ${node.textContent}`))
 
-test("each agent response shows one token and cost line for its cleanup scope", async () => open(async page => {
+test("every agent message shows one token and cost line adding up its cleanup selection", async () => open(async page => {
   await usageLines(page).first().waitFor()
-  assert.equal(await usageLines(page).count(), 1, "steps ending with tools fold into the response's line; the idle record has none")
-  for (const messageId of ["msg_02", "msg_02b"]) {
-    assert.equal(await page.locator(`[data-message-id="${messageId}"] .message-step-usage-toggle`).count(), 0)
-  }
-  assert.deepEqual(await chips(page, "msg_03"), ["Input 3K", "Output 54", "Cost $0.76"], "the response sums every step since the prompt")
+  assert.equal(await usageLines(page).count(), 2, "one line per agent message, none for the tool-only step or the idle record")
+  assert.deepEqual(await chips(page, "msg_02"), ["Input 1K", "Output 34", "Cost $0.01"])
+  assert.equal(await page.locator('[data-message-id="msg_02b"] .message-step-usage-toggle').count(), 0)
+  assert.deepEqual(await chips(page, "msg_03"), ["Input 3K", "Output 54", "Cost $0.76"], "the answer adds up the messages holding the reads its cleanup selects")
   assert.equal(await page.locator('[data-message-id="msg_03"] .message-step-usage-toggle .message-step-usage-chip').count(), 3)
   assert.equal(await page.locator('[data-message-id="msg_03"] .message-step-usage-content').count(), 0)
-  assert.equal(await page.locator('[data-message-id="msg_03"] .message-step-usage-toggle').getAttribute("aria-expanded"), "false")
-  // No usage line between the steps: both reads stay one group, deletable as a whole.
+  assert.equal(await page.locator('[data-message-id="msg_02"] .message-step-usage-toggle').getAttribute("aria-expanded"), "false")
+  // The first message's line follows its text, before its read: both reads stay
+  // one group, deletable as a whole.
+  assert.equal(await page.locator('.message-stream-block[data-message-id="msg_02"]').evaluate(block => {
+    const usage = block.querySelector(".message-step-finish"), group = block.querySelector(".message-technical-group-toggle")
+    return Boolean(usage && group && usage.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING)
+  }), true, "the line follows the message text, before the step's tools")
   assert.equal(await page.locator(".message-technical-group-toggle").count(), 1)
   await page.locator('[data-message-id="msg_02"]').getByRole("button", { name: "Delete", exact: true }).waitFor()
   // The line keeps the former step-finish geometry: flush under its step, no
   // block borders, and a message border because it follows text.
-  const geometry = page.locator('[data-message-id="msg_03"] .message-step-finish').evaluate(element => {
+  const geometry = (messageId: string) => page.locator(`[data-message-id="${messageId}"] .message-step-finish`).evaluate(element => {
     const style = getComputedStyle(element)
     return [style.marginTop, style.marginBottom, style.paddingTop, style.borderTopWidth, style.borderBottomWidth, style.borderLeftWidth]
   })
-  assert.deepEqual(await geometry, ["-2px", "0px", "0px", "0px", "0px", "1px"])
+  assert.deepEqual(await geometry("msg_03"), ["-2px", "0px", "0px", "0px", "0px", "1px"])
+  assert.deepEqual(await geometry("msg_02"), ["-2px", "0px", "0px", "0px", "0px", "1px"])
 
   await page.locator('[data-message-id="msg_03"] .message-step-usage-toggle').click()
   assert.deepEqual(await chips(page, "msg_03"), [
@@ -86,13 +91,13 @@ test("the Tokens filter hides, collapses and expands every usage line", async ()
   await page.getByRole("button", { name: "Message content", exact: true }).click()
   const row = page.getByRole("group", { name: "Tokens", exact: true })
   await row.getByRole("button", { name: "Expand Tokens", exact: true }).click()
-  await page.waitForFunction(() => document.querySelectorAll(".message-step-usage-chip").length === 6)
+  await page.waitForFunction(() => document.querySelectorAll(".message-step-usage-chip").length === 12)
   await row.getByRole("button", { name: "Hide Tokens", exact: true }).click()
   await page.waitForFunction(() => !document.querySelector(".message-step-usage-toggle"))
   assert.equal(await page.locator(".message-step-usage-chip, .message-step-usage-content").count(), 0)
   await page.getByText("There are three files", { exact: true }).waitFor()
   await row.getByRole("button", { name: "Show Tokens", exact: true }).click()
-  await page.waitForFunction(() => document.querySelectorAll(".message-step-usage-toggle").length === 1)
+  await page.waitForFunction(() => document.querySelectorAll(".message-step-usage-toggle").length === 2)
 }))
 
 test("message token headers ellipsize at narrow widths and disclose content without duplicates using Enter/Space, including RTL", async () => open(async page => {
@@ -139,6 +144,28 @@ test("message token headers ellipsize at narrow widths and disclose content with
     assert.equal(await toggle.evaluate(element => element === document.activeElement), true)
     assert.equal(await content.count(), 0)
   }
+}))
+
+test("a settling text-then-tool step gains its line without remounting or collapsing its tool", async () => open(async page => {
+  await usageLines(page).first().waitFor()
+  await page.evaluate(() => (window as any).fixture.startToolStep())
+  const tool = page.locator('[data-message-id="msg_live_tool"] .tool-call-message[data-part-id="call_live_tool"]')
+  const toggle = tool.locator(".tool-call-header-toggle")
+  await toggle.waitFor()
+  const expanded = await toggle.getAttribute("aria-expanded")
+  await toggle.click()
+  assert.notEqual(await toggle.getAttribute("aria-expanded"), expanded)
+  await tool.evaluate(element => { (element as HTMLElement).dataset.remountProbe = "kept" })
+  assert.equal(await page.locator('[data-message-id="msg_live_tool"] .message-step-usage-toggle').count(), 0, "no line before the step settles")
+  await page.evaluate(() => (window as any).fixture.endToolStep())
+  await page.locator('[data-message-id="msg_live_tool"] .message-step-usage-toggle').waitFor()
+  assert.deepEqual(await chips(page, "msg_live_tool"), ["Input 500", "Output 7", "Cost $0.00"])
+  assert.equal(await tool.evaluate(element => (element as HTMLElement).dataset.remountProbe), "kept", "the tool row is the same element")
+  assert.notEqual(await toggle.getAttribute("aria-expanded"), expanded, "the user's expansion survives settlement")
+  assert.equal(await page.locator('.message-stream-block[data-message-id="msg_live_tool"]').evaluate(block => {
+    const usage = block.querySelector(".message-step-finish"), toolRow = block.querySelector(".tool-call-message")
+    return Boolean(usage && toolRow && usage.compareDocumentPosition(toolRow) & Node.DOCUMENT_POSITION_FOLLOWING)
+  }), true, "the line sits under the text, before the tool")
 }))
 
 test("a live step gains its usage line when native step settlement reports it", async () => open(async page => {

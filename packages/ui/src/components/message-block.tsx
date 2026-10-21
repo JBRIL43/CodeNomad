@@ -48,10 +48,9 @@ import { showAlertDialog } from "../stores/alerts"
 import { resolveFormToolTarget } from "./form-request-tool-target"
 import { Markdown } from "./markdown"
 import { useTheme } from "../lib/theme"
-import { groupTechnicalParts, isTechnicalGroupingVisiblePart, segmentExplorationItems, technicalPartKey, type TechnicalCleanupPart, type TranscriptTechnicalGroup, type UsageLine } from "../lib/message-part-grouping"
-import { MessageUsage, NO_STEP_BORDER } from "./message-usage"
+import { groupTechnicalParts, isTechnicalGroupingVisiblePart, segmentExplorationItems, sumMessageUsage, technicalPartKey, type TechnicalCleanupPart, type TranscriptTechnicalGroup } from "../lib/message-part-grouping"
+import { MessageUsage } from "./message-usage"
 
-const USER_BORDER_COLOR = "var(--message-user-border)"
 const ASSISTANT_BORDER_COLOR = "var(--message-assistant-border)"
 const BACKGROUNDABLE_TOOLS = new Set(["bash", "shell", "task", "subagent"])
 
@@ -200,6 +199,7 @@ interface MessageContentItemProps {
   onPendingPromptRemove?: (item: SessionInboxUser) => void
   technicalCleanupParts: () => TechnicalCleanupPart[]
   onTechnicalCleanupHoverChange?: (hovered: boolean) => void
+  usageVisibility: () => VisibilityPreference
   onContentRendered?: () => void
 }
 
@@ -241,6 +241,16 @@ function MessageContentItem(props: MessageContentItemProps) {
       return part?.type === "text" && isVisibleContentPart(part)
     })
     return Boolean(lastTextPartId && visibleParts().some((part) => part.id === lastTextPartId))
+  })
+
+  // One token line under each agent message: its own usage plus that of every
+  // message holding the tools and reasoning its "delete tools and reasoning"
+  // selects. It renders inside this row, so it never moves the tools after it.
+  const usage = createMemo(() => {
+    const own = messageInfo()
+    if (!own?.tokens || !isFinalAssistantTextBlock() || props.usageVisibility() === "hidden") return
+    const ids = new Set([props.messageId, ...props.technicalCleanupParts().map((part) => part.messageId)])
+    return sumMessageUsage(own, [...ids].map((id) => props.store().getMessageInfo(id)))
   })
 
   // A record's error renders once: in the row with its last displayed content,
@@ -304,6 +314,12 @@ function MessageContentItem(props: MessageContentItemProps) {
         onTechnicalCleanupHoverChange={props.onTechnicalCleanupHoverChange}
         onContentRendered={props.onContentRendered}
       />
+      <Show when={usage()}>
+        {(info) => (
+          <MessageUsage messageInfo={info()} usageVisibility={props.usageVisibility()} borderColor={ASSISTANT_BORDER_COLOR}
+            onContentRendered={props.onContentRendered} />
+        )}
+      </Show>
     </Show>
   )
 }
@@ -439,13 +455,6 @@ function ToolCallItem(props: ToolCallItemProps) {
   )
 }
 
-interface UsageDisplayItem {
-  type: "usage"
-  key: string
-  messageInfo: MessageInfo
-  accentColor?: string
-}
-
 interface ReasoningDisplayPart {
   part: ClientPart
   messageInfo?: MessageInfo
@@ -485,7 +494,7 @@ type CompactionDisplayItem = {
 
 type SystemDisplayItem = { type: "system"; key: string; part: Extract<ClientPart, { type: "system" }> }
 type HiddenPartsDisplayItem = { type: "hidden-parts"; key: string; messageId: string; count: number; start: number }
-type MessageBlockItem = ContentDisplayItem | ToolDisplayItem | ExplorationDisplayItem | UsageDisplayItem | ReasoningDisplayItem | CompactionDisplayItem | SystemDisplayItem | HiddenPartsDisplayItem
+type MessageBlockItem = ContentDisplayItem | ToolDisplayItem | ExplorationDisplayItem | ReasoningDisplayItem | CompactionDisplayItem | SystemDisplayItem | HiddenPartsDisplayItem
 
 interface MessageDisplayBlock {
   messageId: string
@@ -522,8 +531,6 @@ interface MessageBlockProps {
   pendingFormToolTargets?: Accessor<ReadonlySet<string>>
   technicalGroupForPart?: (messageId: string, partId: string) => TranscriptTechnicalGroup | undefined
   technicalGroupingSignature?: Accessor<string>
-  /** This message's agent-response usage line, summed over its steps (projectUsageLines). */
-  usageLine?: Accessor<UsageLine | undefined>
   technicalCleanupParts?: (messageId: string, partId: string) => TechnicalCleanupPart[]
   technicalCleanupPartKeys?: Accessor<ReadonlySet<string>>
   onTechnicalCleanupHoverChange?: (messageId: string, partId: string, hovered: boolean) => void
@@ -594,7 +601,6 @@ export default function MessageBlock(props: MessageBlockProps) {
       props.usageMetricsVisibility(),
       props.systemMessagesVisibility?.() ?? "hidden",
       props.technicalGroupingSignature?.() ?? "",
-      props.usageLine?.()?.signature ?? "",
     ].join("|")
 
     // Removing and rehydrating a record can reuse revision/info version zero.
@@ -615,8 +621,6 @@ export default function MessageBlock(props: MessageBlockProps) {
     const blockToolKeys: string[] = []
     let pendingParts: ClientPart[] = []
     let agentMetaAttached = current.role !== "assistant"
-    const defaultAccentColor = current.role === "user" ? USER_BORDER_COLOR : ASSISTANT_BORDER_COLOR
-    let lastAccentColor = defaultAccentColor
 
     const flushContent = () => {
       if (pendingParts.length === 0) return
@@ -648,7 +652,6 @@ export default function MessageBlock(props: MessageBlockProps) {
 
       items.push(cached)
       blockContentKeys.push(segmentKey)
-      lastAccentColor = defaultAccentColor
       pendingParts = []
     }
 
@@ -709,7 +712,6 @@ export default function MessageBlock(props: MessageBlockProps) {
             technicalGroup,
           })
         }
-        lastAccentColor = NO_STEP_BORDER
         return
       }
 
@@ -739,7 +741,6 @@ export default function MessageBlock(props: MessageBlockProps) {
               defaultExpanded: props.thinkingDefaultExpanded(),
               technicalGroup,
             })
-            lastAccentColor = ASSISTANT_BORDER_COLOR
           }
         }
         return
@@ -758,7 +759,6 @@ export default function MessageBlock(props: MessageBlockProps) {
         flushContent()
         const item = toolItem(part as ToolCallPart)
         if (item) items.push(item)
-        lastAccentColor = NO_STEP_BORDER
         return
       }
 
@@ -775,7 +775,6 @@ export default function MessageBlock(props: MessageBlockProps) {
           messageId: current.id,
           partId,
         })
-        lastAccentColor = "var(--session-status-compacting-fg)"
         return
       }
 
@@ -792,12 +791,6 @@ export default function MessageBlock(props: MessageBlockProps) {
         pendingParts.push(placeholder)
         flushContent()
       }
-    }
-
-    // One usage line per agent response, summed over its cleanup scope's steps.
-    const usageLine = props.usageLine?.()
-    if (usageLine) {
-      items.push({ type: "usage", key: `${current.id}:usage`, messageInfo: usageLine.info, accentColor: lastAccentColor || defaultAccentColor })
     }
 
     const resultBlock: MessageDisplayBlock = { messageId: current.id, status: current.status, items, truncated: displayData.hiddenCount > 0 }
@@ -951,6 +944,7 @@ export default function MessageBlock(props: MessageBlockProps) {
                       (item() as ContentDisplayItem).startPartId,
                       hovered,
                     )}
+                    usageVisibility={props.usageMetricsVisibility}
                     onContentRendered={props.onContentRendered}
                   />
                 </Match>
@@ -1000,14 +994,6 @@ export default function MessageBlock(props: MessageBlockProps) {
                       onContentRendered={props.onContentRendered}
                     />
                   </Show>
-                </Match>
-                <Match when={item().type === "usage"}>
-                  <MessageUsage
-                    messageInfo={(item() as UsageDisplayItem).messageInfo}
-                    usageVisibility={props.usageMetricsVisibility()}
-                    borderColor={(item() as UsageDisplayItem).accentColor}
-                    onContentRendered={props.onContentRendered}
-                  />
                 </Match>
                 <Match when={item().type === "system"}>
                   <SystemMessage part={(item() as SystemDisplayItem).part} visibility={props.systemMessagesVisibility?.() ?? "hidden"}
