@@ -2,7 +2,7 @@
 
 Betreiben Sie CodeNomad dort, wo Ihre Projekte und Werkzeuge liegen, und verwenden Sie dessen Browseroberfläche lokal oder entfernt. Das Backend bietet Dateisystemzugriff, Git-Vorgänge, Authentifizierung und Ereigniszustellung. OpenCodes gemeinsamer Dienst verwaltet Unterhaltungen und Ausführung; er ist kein untergeordneter Server, der bei Browsertrennung gestoppt werden soll.
 
-Dieselbe Oberfläche unterstützt [mehrere Projekt-Tabs und Worktrees](projects.md), [Unterhaltungsfamilien und Hintergrundaktivität](conversations.md), [begrenztes Verlaufsladen, Suche und Timeline-Navigation](history.md) sowie [Befehlspalette und Tastenkürzel](shortcuts.md). Browser- und Tablet-Zugriff verlagern die Ausführung nicht vom Host.
+Dieselbe Oberfläche unterstützt [mehrere Projekt-Tabs und Worktrees](projects.md), [Unterhaltungsfamilien und Hintergrundaktivität](conversations.md), [begrenztes Verlaufsladen, Suche und Timeline-Navigation](history.md), [Befehlspalette und Tastenkürzel](shortcuts.md) sowie [Missionen](missions.md). Browser- und Tablet-Zugriff verlagern die Ausführung nicht vom Host.
 
 ## Host vorbereiten {#prerequisites}
 
@@ -45,13 +45,15 @@ npx codenomad --generate-token --launch
 
 Die Befehle laufen im Vordergrund. Terminal-Schließen oder Ctrl+C stoppt dieses Backend und dessen Fernsteuerungsverbindung. `--launch` öffnet nur einen Browser; es macht den Server nicht zum Daemon. Für unbeaufsichtigte Verfügbarkeit führen Sie denselben Befehl über Ihre OS-Prozess-/Dienstverwaltung mit expliziter Konfiguration, Arbeitsverzeichnis, Umgebung und Neustartrichtlinie aus. Schreiben Sie keine Geheimnisse in Dienstlogs oder öffentliche Unit-Dateien.
 
-Browser-Schließen stoppt kein separat laufendes eigenständiges Backend. Das Schließen eines Projekt-Tabs schließt das Projekt in CodeNomad und beendet dessen Verfolgung durch CodeNomad; Sitzungen laufen in OpenCode weiter und sind nach erneutem Öffnen des Projekts wieder verfügbar. Die native Location und der gemeinsame Daemon werden dabei nicht entfernt oder beendet. Auch Backend-Ende lässt den OpenCode-Dienst laufen. Backend-abhängige Funktionen fehlen bis zur Rückkehr von CodeNomad; die separate Lebensdauer nativer Planung erläutert [Missionen](missions.md).
+Browser-Schließen stoppt kein separat laufendes eigenständiges Backend. Das Schließen eines Projekt-Tabs entfernt die CodeNomad-Verbindung dieses Projekts, aber Sitzungen laufen in OpenCode weiter; öffnen Sie das Projekt erneut, um sie wiederzufinden. CodeNomad entlädt niemals seine native Location. Das Schließen eines ganzen Fensters, Beenden oder Neuladen bewahrt Projektverbindungen für die Wiederherstellung. Auch Backend-Ende lässt den OpenCode-Dienst laufen. Backend-abhängige Funktionen fehlen bis zur Rückkehr von CodeNomad; die separate Lebensdauer nativer Planung erläutert [Missionen](missions.md).
 
 ## Adressen und Ports {#addresses}
 
 Beim Start werden **Local Connection URL**, gegebenenfalls **Remote Connection URL** sowie bei Bedarf **Other Accessible URLs** ausgegeben. Verwenden Sie ausgegebenes Schema und Port, keine geratene Adresse. Eine Loopback-URL ist nur auf diesem Rechner erreichbar; eine ausgegebene LAN-Adresse benötigt weiterhin Routing und Firewallzugriff.
 
 HTTPS bevorzugt Port **9898**, HTTP **9899**. Ohne Portüberschreibung wird bei belegtem bevorzugtem Port ein OS-zugewiesener Port verwendet. Ein expliziter Nichtnull-Port weicht nicht aus; `0` fordert einen OS-zugewiesenen Port. Ports akzeptieren Ganzzahlen von 0 bis 65535.
+
+Das Backend kann außerdem einen nicht angekündigten, authentifizierten HTTP-Listener auf einem zufälligen `127.0.0.1`-Port für seine eigenen OpenCode-Plugins wie Missionen öffnen. Er wird nicht ausgegeben und ist keine Client-Adresse.
 
 Listenerfreigabe, Zertifikate, VPN/SSH und Reverse-Proxys erläutert [Direkter Fernzugriff](remote-access.md). Für Zugriff ohne eingehenden Port verwenden Sie [Fernsteuerung](remote-control.md).
 

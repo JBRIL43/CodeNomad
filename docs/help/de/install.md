@@ -62,7 +62,7 @@ Ohne Git können Sie weiterhin einen physischen Ordner öffnen und verzeichnisge
 2. Prüfen Sie vor dem Öffnen eines Projekts den Laufzeitstatus.
 3. Öffnen Sie später **Einstellungen → OpenCode**, um Programmdatei, Installation und gemeinsamen Dienst getrennt zu verwalten.
 
-CodeNomad bevorzugt kompatible Programmdateien im `PATH` und unterstützt eine ausdrücklich ausgewählte Programmdatei. Das Installieren/Aktualisieren einer CLI startet einen bereits laufenden gemeinsamen Dienst nicht stillschweigend neu. Die [OpenCode-Einrichtung](opencode.md) erläutert Neustart-/Neuladefolgen, WSL und die Sitzungsumgebung.
+CodeNomad bevorzugt kompatible Programmdateien im `PATH` und unterstützt eine ausdrücklich ausgewählte Programmdatei. Startet `PATH` ein älteres OpenCode, bietet die Einrichtung an, ein mit npm installiertes OpenCode 1.x nach Bestätigung zu ersetzen oder OpenCode 2 für CodeNomad neben einer auf anderem Weg erstellten Installation zu installieren, die sie nie verändert; siehe [OpenCode-Einrichtung](opencode.md#select-cli). Das Installieren/Aktualisieren einer CLI startet einen bereits laufenden gemeinsamen Dienst nicht stillschweigend neu. Die [OpenCode-Einrichtung](opencode.md) erläutert Neustart-/Neuladefolgen, WSL und die Sitzungsumgebung.
 
 ## Stattdessen einen Browser verwenden {#browser-install}
 

@@ -62,7 +62,7 @@ Sans Git, vous pouvez toujours ouvrir un dossier physique et utiliser des conver
 2. Vérifiez l’état de l’environnement d’exécution avant d’ouvrir un projet.
 3. Revenez à **Préférences → OpenCode** pour gérer séparément l’exécutable, l’installation et le service partagé.
 
-CodeNomad privilégie les exécutables compatibles dans `PATH` et accepte un exécutable explicitement sélectionné. Installer/mettre à jour une CLI ne redémarre pas silencieusement un service partagé déjà lancé. Consultez la [configuration d’OpenCode](opencode.md) pour les conséquences d’un redémarrage/rechargement, WSL et l’environnement des sessions.
+CodeNomad privilégie les exécutables compatibles dans `PATH` et accepte un exécutable explicitement sélectionné. Si `PATH` lance un OpenCode plus ancien, la configuration propose, après confirmation, de remplacer un OpenCode 1.x installé avec npm, ou d’installer OpenCode 2 pour CodeNomad à côté d’une installation faite autrement, qu’elle ne modifie jamais ; voir la [configuration d’OpenCode](opencode.md#select-cli). Installer/mettre à jour une CLI ne redémarre pas silencieusement un service partagé déjà lancé. Consultez la [configuration d’OpenCode](opencode.md) pour les conséquences d’un redémarrage/rechargement, WSL et l’environnement des sessions.
 
 ## Utiliser plutôt un navigateur {#browser-install}
 

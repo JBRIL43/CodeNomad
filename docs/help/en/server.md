@@ -2,7 +2,7 @@
 
 Run CodeNomad where your projects and tools live, then use its browser UI locally or remotely. The backend supplies filesystem access, Git operations, authentication and event delivery. OpenCode's shared service owns conversations and execution; it is not a child server to stop when a browser disconnects.
 
-The same UI supports [multiple project tabs and worktrees](projects.md), [conversation families and background activity](conversations.md), [bounded history loading, search and timeline navigation](history.md), and a [command palette and shortcuts](shortcuts.md). Browser and tablet access do not move execution off the host.
+The same UI supports [multiple project tabs and worktrees](projects.md), [conversation families and background activity](conversations.md), [bounded history loading, search and timeline navigation](history.md), a [command palette and shortcuts](shortcuts.md), and [Missions](missions.md). Browser and tablet access do not move execution off the host.
 
 ## Prepare the host {#prerequisites}
 
@@ -52,6 +52,8 @@ Closing a browser does not stop a separately running standalone backend. Closing
 Startup prints **Local Connection URL**, and **Remote Connection URL** when one is available, plus **Other Accessible URLs** where applicable. Use the printed scheme and port, not a guessed address. A loopback URL is reachable only on that machine; a printed LAN address still requires routing and firewall access.
 
 HTTPS prefers port **9898** and HTTP prefers **9899**. With no port override, an occupied preferred port falls back to an OS-assigned port. An explicit nonzero port does not fall back; `0` requests an OS-assigned port. Ports accept integers from 0 through 65535.
+
+The backend can also open an unannounced, authenticated HTTP listener on a random `127.0.0.1` port for its own OpenCode plugins, such as Missions. It is not printed and is not a client address.
 
 For listener exposure, certificates, VPN/SSH and reverse proxies, use [Direct remote access](remote-access.md). For access without an inbound port, use [Remote Control](remote-control.md).
 

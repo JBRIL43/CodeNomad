@@ -62,7 +62,7 @@ Without Git, you can still open a physical folder and use directory-only convers
 2. Verify the runtime status before opening a project.
 3. Revisit **Preferences → OpenCode** to manage the executable, installation and shared service separately.
 
-CodeNomad prefers compatible executables on `PATH` and supports an explicitly selected executable. Installing/updating a CLI does not silently restart an already running shared service. See [OpenCode setup](opencode.md) for restart/reload consequences, WSL and session environment.
+CodeNomad prefers compatible executables on `PATH` and supports an explicitly selected executable. If `PATH` starts an older OpenCode, setup offers to replace an npm-installed OpenCode 1.x after confirmation, or to install OpenCode 2 for CodeNomad beside an installation made another way, which it never modifies; see [OpenCode setup](opencode.md#select-cli). Installing/updating a CLI does not silently restart an already running shared service. See [OpenCode setup](opencode.md) for restart/reload consequences, WSL and session environment.
 
 ## Use a browser instead {#browser-install}
 

@@ -62,7 +62,7 @@ Windows 上，请安装 [Git for Windows](https://gitforwindows.org/)，并启�
 2. 打开项目前确认运行时状态。
 3. 返回**偏好设置 → OpenCode**，分别管理可执行文件、安装和共享服务。
 
-CodeNomad 优先使用 `PATH` 中兼容的可执行文件，也支持显式选择。安装/更新 CLI 不会静默重启已运行的共享服务。重启/重新加载的影响、WSL 和会话环境请参阅 [OpenCode 设置](opencode.md)。
+CodeNomad 优先使用 `PATH` 中兼容的可执行文件，也支持显式选择。如果 `PATH` 启动的是较旧的 OpenCode，设置流程会在确认后替换通过 npm 安装的 OpenCode 1.x；对于以其他方式安装的版本，则会在其旁边为 CodeNomad 安装 OpenCode 2，且绝不修改原安装；参阅 [OpenCode 设置](opencode.md#select-cli)。安装/更新 CLI 不会静默重启已运行的共享服务。重启/重新加载的影响、WSL 和会话环境请参阅 [OpenCode 设置](opencode.md)。
 
 ## 改用浏览器 {#browser-install}
 
