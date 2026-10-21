@@ -11,12 +11,9 @@ browser ─TLS─▶ OpenTunnel relay (forwards ciphertext) ─▶ OpenTunnel SD
 ## Transport
 
 - `packages/remote-tunnel` wraps `@opentunnel/client` behind CodeNomad-owned
-  types. The server build bundles it into `dist/remote-control/tunnel-runtime.js`
-  with the Effect copy it resolves (the SDK peers `effect ^4.0.0`; since
-  OpenCode 2.0.27 the workspace shares one stable 4.0.x). It was introduced
-  while `@opencode/client` pinned `4.0.0-rc.112`, where a strict npm install of
-  both side by side failed with `ERESOLVE`; the published server still keeps no runtime
-  dependency on the private workspace package.
+  types. The server build bundles it with its resolved Effect copy into
+  `dist/remote-control/tunnel-runtime.js`; never give the published server a
+  runtime dependency on the private workspace package.
 - CodeNomad claims one random route (`codenomad-<hex>`, persisted) on the
   device's shared `default` identity. OpenCode's `opencode pair --remote` and
   the OpenTunnel CLI use the same identity with their own routes. Stopping
@@ -36,9 +33,11 @@ browser ─TLS─▶ OpenTunnel relay (forwards ciphertext) ─▶ OpenTunnel SD
   directory resumes (`remote-control.owner`, live-PID lease replaced after a
   crash): OpenTunnel gives a route to one bridge and a contender retries until
   it takes over, so a second backend would otherwise silently serve the paired
-  devices. An explicit Start is not blocked. Settings polls the status only while
+  devices. An explicit Start always proceeds. Settings polls the status only while
   the tunnel is (re)connecting, keeps paired devices listed while it is off and
   offers Stop after a failed resume.
+- Keep OpenTunnel's per-route PROXY protocol off: the ingress expects plain
+  HTTP.
 
 ## Admission
 
@@ -98,23 +97,7 @@ browser ─TLS─▶ OpenTunnel relay (forwards ciphertext) ─▶ OpenTunnel SD
   afterwards. It creates a public, certificate-logged hostname.
 - The packaged smoke test imports the bundled runtime with the packaged Node.
 
-Measured on 2026-10-09 with the hosted relay: HTTPS with a publicly trusted
-certificate, an 8 MiB upload, SSE with cancellation reaching the target, and
-WebSocket text and binary all worked. A reader stalled on a 64 MiB download did
-not delay other requests on the same bridge. On Node 24/25, undici's
-`WebSocket.bufferedAmount` grows to 31.8 MiB against a paused peer, so the
-SDK's 1 MiB/256 KiB watermarks apply. The `bufferedAmount = 0` defect reported
-upstream affects Bun only.
+## Agent conventions
 
-## Upstream
-
-- [anomalyco/opentunnel#34](https://github.com/anomalyco/opentunnel/pull/34):
-  both clients enforce the `max_conns` they advertise.
-- [anomalyco/opentunnel#45](https://github.com/anomalyco/opentunnel/issues/45)
-  (0.5.1): API calls retry transient failures (5xx, Cloudflare 52x) with capped
-  backoff, errors name the HTTP status, and `connect` keeps an unexpired saved
-  certificate when the check still fails. CodeNomad does not enable the 0.5.0
-  per-route PROXY protocol: the ingress expects plain HTTP.
-- Open topics: atomic identity writes with a provisioning lock, an in-process
-  connection target (no loopback hop, preserved peer address) and
-  per-connection flow control. The repository now accepts issues only.
+- Remote Access settings put Remote Control first. Direct/LAN access (listening mode, server password, reachable addresses) sits in one collapsed disclosure that opens by itself while the server listens beyond localhost. Its texts refer to direct connections only, because Remote Control pairs devices and needs neither a password nor an open port. It uses the shared `.settings-disclosure` (`styles/components/settings-disclosure.css`).
+- The tunnel runtime (`build:remote-tunnel`) keeps its own backend-side Effect runtime, separate from OpenCode's native plugin graph. Ingress sockets are remote by membership: grant local privileges only through `isLocalRequest()`/`isLoopbackRequest()`, never peer addresses or headers. The resume lease lives in `owner-lease.ts`; never auto-start an installation that was not started. Run the Validation tests above when changing the transport.
