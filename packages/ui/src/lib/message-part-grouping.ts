@@ -57,9 +57,72 @@ export function isTechnicalGroupingVisiblePart(part: ClientPart): boolean {
   return true
 }
 
+/** Text that answers the user: it bounds technical cleanup runs and agent responses. */
+export function isResponseTextPart(part: ClientPart): boolean {
+  return (part.type === "text" || part.type === "file") && !isHiddenSyntheticTextPart(part) && partHasRenderableText(part)
+}
+
 /** Each native assistant message is one model step; its settlement records the step's usage. */
 export function hasVisibleUsage(messageInfo: MessageInfo | undefined, usageVisible: boolean): boolean {
   return usageVisible && messageInfo?.role === "assistant" && Boolean(messageInfo.tokens)
+}
+
+/** A transcript record in order; prompts and native end-of-turn records end the turn. */
+export interface UsageStep { messageId: string; endsTurn?: boolean; info?: MessageInfo; endsWithResponse?: boolean }
+
+/** Whether a step's last cleanup item (tool, reasoning or response text) is response text. */
+export function endsWithResponseText(parts: readonly ClientPart[]): boolean {
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index]
+    if (isResponseTextPart(part)) return true
+    if (part.type === "tool" || part.type === "reasoning") return false
+  }
+  return false
+}
+export interface UsageLine {
+  /** The summed usage, shown with the response's own message metadata. */
+  info: MessageInfo
+  signature: string
+}
+
+/**
+ * One usage line per agent response, with the scope of its "delete tools and
+ * reasoning" cleanup: a settled step ending with response text shows the sum of
+ * itself and every settled step since the previous such step or prompt. A step
+ * whose response text is followed by tools passes its usage on to the next
+ * response, so no usage line splits a technical group. A turn ending without a
+ * response, or whose last step failed, shows none.
+ */
+export function projectUsageLines(steps: readonly UsageStep[]): Map<string, UsageLine> {
+  const lines = new Map<string, UsageLine>()
+  let pending: MessageInfo[] = []
+  for (const step of steps) {
+    if (step.endsTurn) {
+      pending = []
+      continue
+    }
+    if (!hasVisibleUsage(step.info, true)) continue
+    pending.push(step.info!)
+    if (step.endsWithResponse && !step.info!.error) {
+      lines.set(step.messageId, sumUsage(pending))
+      pending = []
+    }
+  }
+  return lines
+}
+
+function sumUsage(steps: MessageInfo[]): UsageLine {
+  const total = (read: (tokens: NonNullable<MessageInfo["tokens"]>) => number | undefined) =>
+    steps.reduce((sum, step) => sum + (read(step.tokens ?? {}) ?? 0), 0)
+  const tokens = {
+    input: total(tokens => tokens.input), output: total(tokens => tokens.output), reasoning: total(tokens => tokens.reasoning),
+    cache: { read: total(tokens => tokens.cache?.read), write: total(tokens => tokens.cache?.write) },
+  }
+  const cost = steps.reduce((sum, step) => sum + (step.cost ?? 0), 0)
+  return {
+    info: { ...steps.at(-1)!, tokens, cost },
+    signature: [steps.length, tokens.input, tokens.output, tokens.reasoning, tokens.cache.read, tokens.cache.write, cost].join(":"),
+  }
 }
 
 export function technicalPartKey(messageId: string, partId: string) {
