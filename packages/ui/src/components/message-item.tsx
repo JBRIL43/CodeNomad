@@ -16,6 +16,7 @@ import { getMessageDurationMs, getMessageStartedAt } from "../lib/message-timing
 import SpeechActionButton from "./speech-action-button"
 import { getUserMessageMenuState, isMessageTextStreaming, shouldShowGeneratingPlaceholder } from "../stores/message-v2/message-status"
 import { deleteMessageTechnicalParts } from "../stores/session-actions"
+import { agents, providers } from "../stores/session-state"
 import { showAlertDialog, showConfirmDialog } from "../stores/alerts"
 import type { TechnicalCleanupPart } from "../lib/message-part-grouping"
 
@@ -376,7 +377,8 @@ export default function MessageItem(props: MessageItemProps) {
     if (isUser()) return ""
     const info = props.messageInfo
     if (!info || info.role !== "assistant") return ""
-    return info.mode || ""
+    // Same names as the composer footer, falling back to the identifier.
+    return agents().get(props.instanceId)?.find((agent) => agent.id === info.mode)?.name || info.mode || ""
   }
 
   const modelIdentifier = () => {
@@ -386,7 +388,8 @@ export default function MessageItem(props: MessageItemProps) {
     const modelID = info.modelID || ""
     const providerID = info.providerID || ""
 
-    const base = modelID && providerID ? `${providerID}/${modelID}` : modelID
+    const name = providers().get(props.instanceId)?.find((provider) => provider.id === providerID)?.models.find((model) => model.id === modelID)?.name
+    const base = name || (modelID && providerID ? `${providerID}/${modelID}` : modelID)
     if (!base) return ""
 
     const variant = info.variant
