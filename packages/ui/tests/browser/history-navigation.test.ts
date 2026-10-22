@@ -94,7 +94,8 @@ async function fixture(mixed = false, pausePreviews = false, holdMessages = fals
     const read = method === "window"
       ? readNavigationWindow(reader, scope, input.target, new AbortController().signal)
       : method === "outlinePreview" ? readOutlinePreviews(reader, scope, input.messageIDs, new AbortController().signal)
-        : readSessionOutline(reader, scope, input.cursor, new AbortController().signal, input.after, input.known)
+        // As the backend's versioned outline call, with layouts.
+        : readSessionOutline(reader, scope, input.cursor, new AbortController().signal, input.after, input.known, true)
     reads.add(read)
     const response = await read.finally(() => { reads.delete(read); reader.close() })
     if (method === "outline") { outlineReplies.push(response); await indexGate }
@@ -1372,10 +1373,85 @@ test("an explicit Latest drops a user message jump still waiting for the index",
   } finally { await f.close() }
 })
 
+for (const composer of [false, true]) test(`user message jumps follow the highlighted message with a row clipped to 2 px (${composer ? "composer" : "conversation"})`, async () => {
+  const f = await fixture()
+  try {
+    for (const [key, expected] of [["Alt+ArrowDown", 202], ["Alt+ArrowUp", 200]] as const) {
+      await clickTimeline(f.page, 200)
+      await waitFrames(f.page, 35)
+      const stream = f.page.locator(".message-stream")
+      await stream.hover()
+      // A real gesture releases the selected marker and any pending jump target.
+      await f.page.mouse.wheel(0, 1)
+      await waitFrames(f.page, 12)
+      await f.page.evaluate(id => {
+        const stream = document.querySelector<HTMLElement>(".message-stream")!
+        const row = stream.querySelector<HTMLElement>(`[data-virtual-follow-key="${id}"]`)!
+        stream.scrollTop += row.getBoundingClientRect().bottom - stream.getBoundingClientRect().top - 2
+      }, navigationMessageId(200))
+      await waitFrames(f.page, 20)
+      const clipped = await f.page.evaluate(id => {
+        const stream = document.querySelector<HTMLElement>(".message-stream")!
+        const row = stream.querySelector<HTMLElement>(`[data-virtual-follow-key="${id}"]`)!
+        return row.getBoundingClientRect().bottom - stream.getBoundingClientRect().top
+      }, navigationMessageId(200))
+      assert.ok(Math.abs(clipped - 2) < 1, `message 200 ends 2 px below the top (${clipped})`)
+      const active = () => f.page.locator('.message-timeline-segment[aria-current="true"]').getAttribute("data-message-id")
+      assert.equal(await active(), navigationMessageId(201), "the 4 px reading line highlights message 201")
+      await (composer ? f.page.locator(".prompt-input-container textarea").first() : stream).focus()
+      await f.page.keyboard.press(key)
+      await waitFrames(f.page, 35)
+      assert.equal(await active(), navigationMessageId(expected), `${key} moves exactly one message from the highlighted 201`)
+    }
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
+test("a vanished selected tool step falls back to the reading line for the next user jump", async () => {
+  const f = await fixture(false, false, false, true)
+  try {
+    await clickTimeline(f.page, 601)
+    await waitFrames(f.page, 35)
+    assert.equal(await f.page.locator('.message-timeline-segment[aria-current="true"]').getAttribute("data-message-id"), navigationMessageId(601))
+    // The completed step has only this tool. Pruning it hides its message from
+    // the resident rows and rail while the raw selected id still names it.
+    await f.page.evaluate(() => (window as any).fixture.pruneTool(601))
+    await waitFrames(f.page, 35)
+    assert.equal(await f.page.locator(`.message-timeline-segment[data-message-id="${navigationMessageId(601)}"]`).count(), 0)
+    assert.equal(await f.page.locator('.message-timeline-segment[aria-current="true"]').count(), 0)
+    // Place the reading line on the following message without a gesture that
+    // would release the raw selection and hide the stale-reference bug.
+    await f.page.evaluate(id => {
+      const stream = document.querySelector<HTMLElement>(".message-stream")!
+      const row = stream.querySelector<HTMLElement>(`[data-virtual-follow-key="${id}"]`)!
+      stream.scrollTop += row.getBoundingClientRect().top - stream.getBoundingClientRect().top
+    }, navigationMessageId(602))
+    await waitFrames(f.page, 10)
+    const offset = await f.page.locator(`[data-virtual-follow-key="${navigationMessageId(602)}"]`).evaluate(row =>
+      row.getBoundingClientRect().top - document.querySelector(".message-stream")!.getBoundingClientRect().top)
+    assert.ok(Math.abs(offset) < 2, `message 602 is at the reading line (${offset})`)
+    await f.page.locator(".message-stream").focus()
+    await f.page.keyboard.press("Alt+ArrowDown")
+    await waitFrames(f.page, 35)
+    const active = await f.page.evaluate(() => document.querySelector('.message-timeline-segment[aria-current="true"]')?.getAttribute("data-message-id") ?? null)
+    assert.equal(active, navigationMessageId(603),
+      "Alt+Down advances from the reading-line message 602 after selected step 601 disappears")
+    assert.deepEqual(f.errors, [])
+  } finally { await f.close() }
+})
+
 test("repeated user message jumps advance through prompts the list cannot raise to its top", async () => {
   // Every message is a user message, and the reader starts at the end.
   const f = await fixture()
   try {
+    // Capture the reference only after initial restoration has published its
+    // actual bottom: an in-flight restore can change it before the key fires.
+    await f.page.waitForFunction(() => {
+      const saved = (window as any).fixture.snapshot().scroll
+      const stream = document.querySelector<HTMLElement>(".message-stream")!
+      return saved?.atBottom && saved.followModeType === "following"
+        && stream.scrollHeight - stream.clientHeight - stream.scrollTop < 2
+    })
     const active = () => f.page.evaluate(() => document.querySelector('.message-timeline-segment[aria-current="true"]')?.getAttribute("data-message-id"))
     const waitActive = (index: number) => f.page.waitForFunction(id =>
       document.querySelector('.message-timeline-segment[aria-current="true"]')?.getAttribute("data-message-id") === id, navigationMessageId(index), { timeout: 5000 })
