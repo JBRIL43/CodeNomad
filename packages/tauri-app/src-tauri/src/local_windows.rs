@@ -363,6 +363,10 @@ pub(crate) fn create_local_window(
                 if payload.event() == tauri::webview::PageLoadEvent::Started {
                     crate::notification_badge::page_started(window.as_ref(), badge_binding);
                 }
+                if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                    let zoom = client_state::local_window_zoom(window.app_handle(), window.label());
+                    crate::title_bar::publish_page_zoom(window.as_ref(), zoom);
+                }
             });
     #[cfg(windows)]
     let developer_browser_arguments = app
@@ -381,13 +385,12 @@ pub(crate) fn create_local_window(
     } else {
         builder
     };
-    let result = crate::window_zoom::configure(builder)
+    let result = crate::title_bar::configure(crate::window_zoom::configure(builder))
         .title("CodeNomad")
         .inner_size(1400.0, 900.0)
         .min_inner_size(client_state::MIN_WINDOW_WIDTH as f64, 600.0)
         .resizable(true)
         .fullscreen(false)
-        .decorations(false)
         .background_color(tauri::window::Color(26, 26, 26, 255))
         .visible(false)
         .build();

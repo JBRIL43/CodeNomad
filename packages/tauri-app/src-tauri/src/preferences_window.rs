@@ -342,7 +342,13 @@ fn open_preferences(
     let data_directory = app_state.webview_data_directory.join("local");
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("loading.html".into()))
         .data_directory(data_directory)
-        .initialization_script(CONTEXT_SCRIPT);
+        .initialization_script(CONTEXT_SCRIPT)
+        .on_page_load(|window, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let zoom = crate::client_state::local_window_zoom(window.app_handle(), LABEL);
+                crate::title_bar::publish_page_zoom(window.as_ref(), zoom);
+            }
+        });
     #[cfg(windows)]
     let developer_browser_arguments = app_state.developer_browser_arguments.clone();
     #[cfg(windows)]
@@ -357,13 +363,12 @@ fn open_preferences(
     } else {
         builder
     };
-    let preferences_window = crate::window_zoom::configure(builder)
+    let preferences_window = crate::title_bar::configure(crate::window_zoom::configure(builder))
         .title("Preferences")
         .inner_size(1100.0, 760.0)
         .min_inner_size(760.0, 560.0)
         .resizable(true)
         .fullscreen(false)
-        .decorations(false)
         .background_color(tauri::window::Color(26, 26, 26, 255))
         .visible(false)
         .build()
