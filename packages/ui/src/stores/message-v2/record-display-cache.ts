@@ -1,6 +1,6 @@
 import { createStore, produce } from "solid-js/store"
 import type { ClientPart } from "../../types/message"
-import { extractReasoningTextForRender } from "../../lib/message-render-cache"
+import { extractWholeReasoningText } from "../../lib/message-render-cache"
 import type { MessageRecord } from "./types"
 import { MESSAGE_DISPLAY_HEAD, MESSAGE_DISPLAY_LIMIT, MESSAGE_DISPLAY_TAIL } from "../../../../server/src/opencode/session-pruning/navigation-contract"
 
@@ -48,6 +48,11 @@ const [revealedText, setRevealedText] = createStore<Record<string, number>>({})
 
 function makeCacheKey(instanceId: string, messageId: string) {
   return `${instanceId}:${messageId}`
+}
+
+/** Matches the part-timing helpers: a positive finite timestamp, never 0/NaN. */
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
 }
 
 function makeTextRevealKey(target: RecordTextRevealTarget) {
@@ -115,7 +120,9 @@ export function buildRecordDisplayData(instanceId: string, record: MessageRecord
         orderedParts.push({
           id: part.id,
           type: "reasoning",
-          text: extractReasoningTextForRender(part),
+          // The whole native text, a reference to the store's string: the card
+          // renders a bounded window of it with an exact reveal of the rest.
+          text: extractWholeReasoningText(part),
           time: time ? { created: time.created, completed: time.completed } : undefined,
           revision: entry.revision,
         } as ClientPartWithRevision)
