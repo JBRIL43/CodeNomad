@@ -19,8 +19,10 @@
   margin-bottom: 1.5rem;
 }
 
+/* Brand logos are 3.2 times their title's font size (6rem beside text-3xl) and never
+   grow with the window. */
 .folder-home-logo {
-  height: 8rem;
+  height: 6rem;
 }
 
 .folder-home-content,
@@ -141,18 +143,8 @@
 
 }
 
-@media (min-width: 640px) and (min-height: 721px) {
-  .folder-home-logo {
-    height: 12rem;
-  }
-}
-
 @media (max-height: 720px) and (min-width: 1024px) {
   .folder-home-hero {
     margin-bottom: var(--space-md);
-  }
-
-  .folder-home-logo {
-    height: 8rem;
   }
 }
