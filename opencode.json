@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "./AGENTS.md",
+    "./dev-docs/INDEX.md"
+  ],
+  "ignore": [
+    "node_modules/",
+    "dist/",
+    "out/",
+    ".turbo/",
+    "packages/*/dist/",
+    "packages/*/out/",
+    "packages/electron-app/dist/",
+    "packages/tauri-app/src-tauri/target/"
+  ]
+}
